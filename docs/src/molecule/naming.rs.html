@@ -722,9 +722,7 @@
 <a href="#721" id="721">721</a>
 <a href="#722" id="722">722</a>
 <a href="#723" id="723">723</a>
-<a href="#724" id="724">724</a>
-<a href="#725" id="725">725</a>
-<a href="#726" id="726">726</a></pre></div><pre class="rust"><code><span class="kw">use </span>petgraph::graph::{NodeIndex, UnGraph};
+<a href="#724" id="724">724</a></pre></div><pre class="rust"><code><span class="kw">use </span>petgraph::graph::{NodeIndex, UnGraph};
 <span class="kw">use </span>petgraph::visit::EdgeRef;
 <span class="kw">use </span>std::collections::{BTreeMap, HashSet};
 <span class="kw">use super</span>::<span class="kw-2">*</span>;
@@ -743,9 +741,7 @@
     </span>iupac_acyclic_name(graph)
 }
 
-<span class="doccomment">/// === ACYCLIC NAMING (previous implementation) ===
-
-</span><span class="kw">pub fn </span>iupac_acyclic_name(graph: <span class="kw-2">&amp;</span>MoleculeGraph) -&gt; String {
+<span class="kw">pub fn </span>iupac_acyclic_name(graph: <span class="kw-2">&amp;</span>MoleculeGraph) -&gt; String {
     <span class="kw">let </span>main_chain = find_longest_carbon_chain(graph);
     <span class="kw">if </span>main_chain.is_empty() {
         <span class="kw">return </span><span class="string">"Unknown molecule"</span>.to_string();
