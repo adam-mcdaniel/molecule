@@ -188,4 +188,3 @@ Here's some interesting links for some of my other projects:
 |[My YouTube📽️ (compilers and music)](https://youtu.be/QdnxjYj1pS0?si=pwvegcPkEvqmqF8b)|
 |[My blog📝](https://adam-mcdaniel.net/blog)|
 |[My logic language🧮](https://github.com/adam-mcdaniel/reckon)|
-|[My online BrainF*** interpreter🧠](https://adam-mcdaniel.github.io/harbor)|
