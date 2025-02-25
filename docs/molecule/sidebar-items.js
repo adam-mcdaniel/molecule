@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Bond","Element"],"fn":["iupac_acyclic_name","iupac_name","parse_smiles","visualize_graph"],"type":["MoleculeGraph"]};
