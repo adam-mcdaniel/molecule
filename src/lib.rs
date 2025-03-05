@@ -30,7 +30,73 @@ pub enum Element {
     F,
     Cl,
     Br,
+    S,
+    SAromatic
     // ... other elements
+}
+
+impl Element {
+    pub fn strip_aromatic(&self) -> Element {
+        match self {
+            Element::CAromatic => Element::C,
+            Element::OAromatic => Element::O,
+            Element::NAromatic => Element::N,
+            Element::SAromatic => Element::S,
+            _ => *self,
+        }
+    }
+
+    pub fn is_carbon(&self) -> bool {
+        match self {
+            Element::C | Element::CAromatic => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_hydrogen(&self) -> bool {
+        match self {
+            Element::H => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_oxygen(&self) -> bool {
+        match self {
+            Element::O | Element::OAromatic => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_nitrogen(&self) -> bool {
+        match self {
+            Element::N | Element::NAromatic => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_sulfur(&self) -> bool {
+        match self {
+            Element::S | Element::SAromatic => true,
+            _ => false,
+        }
+    }
+
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Element::C => "C",
+            Element::CAromatic => "C",
+            Element::H => "H",
+            Element::O => "O",
+            Element::OAromatic => "O",
+            Element::N => "N",
+            Element::NAromatic => "N",
+            Element::F => "F",
+            Element::Cl => "Cl",
+            Element::Br => "Br",
+            Element::S => "S",
+            Element::SAromatic => "S",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -11,7 +11,7 @@ use std::fmt::Write; // Correctly import the Write trait
 
 /// Helper function to determine if an element is aromatic
 fn is_aromatic(element: &Element) -> bool {
-    matches!(element, CAromatic | NAromatic | OAromatic)
+    matches!(element, CAromatic | NAromatic | OAromatic | SAromatic)
 }
 
 /// Parses a SMILES string into a MoleculeGraph.
@@ -212,6 +212,8 @@ fn parse_element(symbol: &str) -> Result<Element, String> {
         "Cl" => Ok(Element::Cl),
         "Br" => Ok(Element::Br),
         "F" => Ok(Element::F),
+        "S" => Ok(Element::S),
+        "s" => Ok(Element::SAromatic),
         // ... handle other elements as needed
         _ => Err(format!("Unknown element symbol '{}'", symbol)),
     }

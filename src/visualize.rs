@@ -134,6 +134,8 @@ fn element_to_string(element: &Element) -> String {
         Cl => "Cl".to_string(),
         Br => "Br".to_string(),
         F => "F".to_string(),
+        S => "S".to_string(),
+        SAromatic => "S".to_string(),
         // Add other elements as needed
     }
 }
@@ -151,6 +153,8 @@ fn element_to_color(element: &Element) -> &'static str {
         Cl => "darkgreen",
         Br => "brown",
         F => "pink",
+        S => "yellow",
+        SAromatic => "yellow",
         // Add other elements with distinct colors
     }
 }
@@ -190,6 +194,7 @@ mod tests {
         assert_eq!(element_to_string(&Element::CAromatic), "C");
         assert_eq!(element_to_string(&Element::OAromatic), "O");
         assert_eq!(element_to_string(&Element::NAromatic), "N");
+        assert_eq!(element_to_string(&Element::SAromatic), "S");
     }
 
     #[test]
