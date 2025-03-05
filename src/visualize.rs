@@ -202,4 +202,15 @@ mod tests {
 
         visualize_graph(&molecule, "ethanol.dot", Some("ethanol.png")).expect("Failed to visualize graph");
     }
+
+    #[test]
+    fn draw_methyl_ethanoate() {
+        let smiles = "COC(C)=O"; // Methyl ethanoate
+
+        let molecule = parse_smiles(smiles).expect("Failed to parse SMILES");
+
+        assert_eq!(molecule.node_count(), 5); // 3 Carbons, 1 Oxygen, 1 Hydrogen
+
+        visualize_graph(&molecule, "methyl_ethanoate.dot", Some("methyl_ethanoate.png")).expect("Failed to visualize graph");
+    }
 }
