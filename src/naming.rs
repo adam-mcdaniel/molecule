@@ -1,11 +1,433 @@
 use petgraph::graph::{NodeIndex, UnGraph};
 use std::collections::{BTreeMap, HashSet, HashMap};
 use super::*;
-
-// use petgraph::graph::{NodeIndex, UnGraph};
 use petgraph::visit::EdgeRef;
-// use std::collections::{BTreeMap, HashSet};
-use super::*;
+use tracing::debug;  // added logging from tracing
+
+// --- NEW: Global functional group detection functions ---
+
+/// Detect an ester functional group anywhere in the molecule.
+/// Returns (acyl_carbon, alkoxy_oxygen) if found.
+fn detect_ester_global(graph: &MoleculeGraph) -> Option<(NodeIndex, NodeIndex)> {
+    debug!("Running detect_ester_global");
+    for node in graph.node_indices() {
+        if graph[node] == Element::C {
+            let mut has_carbonyl = false;
+            let mut alkoxy_oxygen: Option<NodeIndex> = None;
+            for nbr in graph.neighbors(node) {
+                if graph[nbr] == Element::O {
+                    if let Some(edge) = graph.find_edge(node, nbr) {
+                        match graph.edge_weight(edge) {
+                            Some(Bond::Double) => {
+                                has_carbonyl = true;
+                                debug!("Found carbonyl on node {:?} via neighbor {:?}", node, nbr);
+                            },
+                            Some(Bond::Single) => {
+                                // Check if oxygen connects to a carbon (other than node)
+                                for nbr2 in graph.neighbors(nbr) {
+                                    if nbr2 != node && (graph[nbr2] == Element::C || graph[nbr2] == Element::CAromatic) {
+                                        alkoxy_oxygen = Some(nbr);
+                                        debug!("Found alkoxy oxygen {:?} connected to node {:?} from {:?}", nbr, node, nbr2);
+                                        break;
+                                    }
+                                }
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if has_carbonyl && alkoxy_oxygen.is_some() {
+                debug!("Ester detected: acyl carbon {:?} with alkoxy oxygen {:?}", node, alkoxy_oxygen.unwrap());
+                return Some((node, alkoxy_oxygen.unwrap()));
+            }
+        }
+    }
+    debug!("No ester group found in detect_ester_global");
+    None
+}
+
+/// Detect an aldehyde group (terminal carbonyl) in the molecule.
+/// Returns the longest carbon chain and the index (in that chain) of the aldehyde carbon.
+fn detect_aldehyde_global(graph: &MoleculeGraph) -> Option<(Vec<NodeIndex>, usize)> {
+    debug!("Running detect_aldehyde_global");
+    let main_chain = find_longest_carbon_chain(graph);
+    if main_chain.is_empty() {
+        debug!("No carbon chain found for aldehyde detection");
+        return None;
+    }
+    // Check first carbon
+    let first = main_chain[0];
+    for nbr in graph.neighbors(first) {
+        if !main_chain.contains(&nbr) && graph[nbr] == Element::O {
+            if let Some(edge) = graph.find_edge(first, nbr) {
+                if graph.edge_weight(edge) == Some(&Bond::Double) {
+                    debug!("Aldehyde detected at start of chain: node {:?}", first);
+                    return Some((main_chain, 0));
+                }
+            }
+        }
+    }
+    // Check last carbon
+    let last_index = main_chain.len() - 1;
+    let last = main_chain[last_index];
+    for nbr in graph.neighbors(last) {
+        if !main_chain.contains(&nbr) && graph[nbr] == Element::O {
+            if let Some(edge) = graph.find_edge(last, nbr) {
+                if graph.edge_weight(edge) == Some(&Bond::Double) {
+                    debug!("Aldehyde detected at end of chain: node {:?}", last);
+                    return Some((main_chain, last_index));
+                }
+            }
+        }
+    }
+    debug!("No aldehyde group found in detect_aldehyde_global");
+    None
+}
+
+/// Helper: performs DFS (only over carbon atoms) starting from `start`,
+/// ignoring the specified `exclude` node (typically the oxygen).
+fn dfs_component(graph: &MoleculeGraph, start: NodeIndex, exclude: NodeIndex) -> Vec<NodeIndex> {
+    let mut visited = HashSet::new();
+    let mut stack = vec![start];
+    while let Some(n) = stack.pop() {
+        if visited.insert(n) {
+            for nbr in graph.neighbors(n) {
+                if nbr == exclude {
+                    continue;
+                }
+                if graph[nbr] == Element::C || graph[nbr] == Element::CAromatic {
+                    if !visited.contains(&nbr) {
+                        stack.push(nbr);
+                    }
+                }
+            }
+        }
+    }
+    visited.into_iter().collect()
+}
+
+/// Detect an ether group in the molecule (i.e. a single oxygen not in a carbonyl
+/// that bridges two carbon fragments). If found, returns a tuple:
+/// (main_chain, alkoxy_chain, oxygen) where the main_chain is chosen as the larger fragment.
+fn detect_ether_global(graph: &MoleculeGraph) -> Option<(Vec<NodeIndex>, Vec<NodeIndex>, NodeIndex)> {
+    debug!("Running detect_ether_global");
+    // Look for oxygen nodes in the graph.
+    for o in graph.node_indices().filter(|&n| graph[n] == Element::O) {
+        let mut is_carbonyl = false;
+        let mut carbon_neighbors = Vec::new();
+        for nbr in graph.neighbors(o) {
+            if graph[nbr].is_carbon() {
+                if let Some(edge) = graph.find_edge(o, nbr) {
+                    if graph.edge_weight(edge) == Some(&Bond::Double) {
+                        is_carbonyl = true;
+                        debug!("Oxygen node {:?} is part of a carbonyl with neighbor {:?}", o, nbr);
+                        break;
+                    } else {
+                        carbon_neighbors.push(nbr);
+                    }
+                }
+            }
+        }
+        if is_carbonyl {
+            continue;
+        }
+        if carbon_neighbors.len() == 2 {
+            let comp1 = dfs_component(graph, carbon_neighbors[0], o);
+            let comp2 = dfs_component(graph, carbon_neighbors[1], o);
+            debug!("Ether candidate at oxygen {:?}: comp1 size {}, comp2 size {}", o, comp1.len(), comp2.len());
+            if comp1.len() >= comp2.len() {
+                return Some((comp1, comp2, o));
+            } else {
+                return Some((comp2, comp1, o));
+            }
+        }
+    }
+    debug!("No ether group found in detect_ether_global");
+    None
+}
+
+// --- NEW: Exocyclic Aldehyde Detection ---
+/// If a carbonyl (aldehyde) carbon is exocyclic—that is, not part of a ring but attached
+/// to a heterocycle—this function returns its proper name using the heterocyclic acid rules.
+fn detect_exocyclic_aldehyde(graph: &MoleculeGraph) -> Option<String> {
+    debug!("Running detect_exocyclic_aldehyde");
+    for node in graph.node_indices() {
+        if graph[node] == Element::C {
+            for nbr in graph.neighbors(node) {
+                if graph[nbr] == Element::O {
+                    if let Some(edge) = graph.find_edge(node, nbr) {
+                        if graph.edge_weight(edge) == Some(&Bond::Double) {
+                            // node is a potential carbonyl carbon.
+                            for nbr2 in graph.neighbors(node) {
+                                if nbr2 != nbr {
+                                    if let Some(ring) = find_ring_containing_node(graph, nbr2) {
+                                        if let Some(name) = name_exocyclic_aldehyde(graph, node) {
+                                            debug!("Exocyclic aldehyde found at node {:?} attached to ring", node);
+                                            return Some(name);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    debug!("No exocyclic aldehyde detected");
+    None
+}
+
+/// Names an ester molecule using the globally detected ester atoms.
+fn iupac_ester_name(graph: &MoleculeGraph, acyl_carbon: NodeIndex, alkoxy_oxygen: NodeIndex) -> String {
+    debug!("Naming ester: acyl carbon {:?}, alkoxy oxygen {:?}", acyl_carbon, alkoxy_oxygen);
+    let acyl_name = name_acyl_group(graph, acyl_carbon);
+    if let Some(alkoxy_carb) = graph.neighbors(alkoxy_oxygen)
+        .find(|&nbr| nbr != acyl_carbon && (graph[nbr] == Element::C || graph[nbr] == Element::CAromatic))
+    {
+        if let Some(ring_name) = alkoxy_ring_name(graph, alkoxy_carb) {
+            debug!("Using aromatic alkoxy ring name: {}", ring_name);
+            return format!("{}-{}", ring_name, acyl_name);
+        }
+        if is_tert_butyl(graph, alkoxy_carb, alkoxy_oxygen) {
+            debug!("Detected tert-butyl substituent");
+            return format!("tert-butyl-{}", acyl_name);
+        }
+        let branch_size = count_branch_carbons(graph, alkoxy_carb, alkoxy_oxygen);
+        let alkoxy_name = match branch_size {
+            1 => "methyl",
+            2 => "ethyl",
+            3 => "propyl",
+            4 => "butyl",
+            5 => "pentyl",
+            _ => "alkyl",
+        };
+        debug!("Ester naming: using alkoxy prefix {}", alkoxy_name);
+        return format!("{}-{}", alkoxy_name, acyl_name);
+    }
+    acyl_name
+}
+
+/// Names an aldehyde molecule given its longest carbon chain and the index
+/// (in that chain) at which the terminal aldehyde group occurs.
+fn iupac_aldehyde_name(graph: &MoleculeGraph, mut main_chain: Vec<NodeIndex>, aldehyde_index: usize) -> String {
+    debug!("Naming aldehyde: chain length {}, aldehyde index {}", main_chain.len(), aldehyde_index);
+    if let Some(exo_aldehyde) = name_exocyclic_aldehyde(graph, main_chain[aldehyde_index]) {
+        debug!("Using exocyclic aldehyde naming: {}", exo_aldehyde);
+        return exo_aldehyde;
+    }
+    if aldehyde_index != 0 {
+        main_chain.reverse();
+        debug!("Reversed main chain to place aldehyde at start");
+    }
+    let mut subs = identify_substituents(graph, &main_chain);
+    subs.retain(|(pos, name)| !(*pos == 1 && name == "oxo"));
+    let numbering_order = choose_numbering(&main_chain, &subs);
+    let final_chain = match numbering_order {
+        NumberingOrder::Original => main_chain.clone(),
+        NumberingOrder::Reversed => {
+            let mut rev = main_chain.clone();
+            rev.reverse();
+            rev
+        }
+    };
+    let subs_final = assign_substituent_positions(&final_chain, &subs, numbering_order);
+    let substituent_prefix = format_substituents(&subs_final);
+    let chain_length = final_chain.len();
+    let root = match chain_length {
+        1 => "methan",
+        2 => "ethan",
+        3 => "propan",
+        4 => "butan",
+        5 => "pentan",
+        6 => "hexan",
+        7 => "heptan",
+        8 => "octan",
+        9 => "nonan",
+        10 => "decan",
+        n => return format!("{}-carbon chain (not fully supported)", n),
+    };
+    debug!("Aldehyde naming: final chain length {}, substituent prefix '{}'", chain_length, substituent_prefix);
+    format!("{}al", substituent_prefix + root)
+}
+
+/// Names an ether molecule given the two disconnected carbon fragments and the bridging oxygen.
+/// The main_chain is chosen as the larger (or preferred) fragment.
+fn iupac_ether_name(graph: &MoleculeGraph, mut main_chain: Vec<NodeIndex>, alkoxy_chain: Vec<NodeIndex>, oxygen: NodeIndex) -> String {
+    debug!("Naming ether: main chain length {}, alkoxy chain length {}, oxygen {:?}", main_chain.len(), alkoxy_chain.len(), oxygen);
+    if let Some(&attach) = main_chain.iter().find(|&&n| graph.find_edge(n, oxygen).is_some()) {
+        while main_chain[0] != attach {
+            main_chain.rotate_left(1);
+        }
+        let main_name = match main_chain.len() {
+            1 => "methane",
+            2 => "ethane",
+            3 => "propane",
+            4 => "butane",
+            5 => "pentane",
+            6 => "hexane",
+            7 => "heptane",
+            8 => "octane",
+            9 => "nonane",
+            10 => "decane",
+            n => return format!("{}-carbon chain (not fully supported)", n),
+        };
+        let ether_prefix = match alkoxy_chain.len() {
+            1 => "methoxy",
+            2 => "ethoxy",
+            3 => "propoxy",
+            4 => "butoxy",
+            5 => "pentoxy",
+            _ => "alkoxy",
+        };
+        debug!("Ether naming: using prefix '{}'", ether_prefix);
+        return format!("1-{}-{}", ether_prefix, main_name);
+    }
+    debug!("Fallback to standard acyclic naming for ether");
+    iupac_acyclic_name(graph)
+}
+
+// --- Modified acyclic naming routine ---
+pub fn iupac_acyclic_name(graph: &MoleculeGraph) -> String {
+    debug!("Starting acyclic naming routine");
+    if let Some((acyl_carbon, alkoxy_oxygen)) = detect_ester_global(graph) {
+        debug!("Acyclic naming: Ester branch taken");
+        return iupac_ester_name(graph, acyl_carbon, alkoxy_oxygen);
+    }
+    if let Some((main_chain, aldehyde_index)) = detect_aldehyde_global(graph) {
+        debug!("Acyclic naming: Aldehyde branch taken");
+        return iupac_aldehyde_name(graph, main_chain, aldehyde_index);
+    }
+    if let Some((main_chain, alkoxy_chain, oxygen)) = detect_ether_global(graph) {
+        debug!("Acyclic naming: Ether branch taken");
+        return iupac_ether_name(graph, main_chain, alkoxy_chain, oxygen);
+    }
+    // NEW: First check for an exocyclic aldehyde attached to a heterocycle.
+    if let Some(name) = detect_exocyclic_aldehyde(graph) {
+        debug!("Acyclic naming: Exocyclic aldehyde branch taken");
+        return name;
+    }
+    
+    debug!("Acyclic naming: Falling back to standard acyclic naming");
+    let main_chain = find_longest_carbon_chain(graph);
+    if main_chain.is_empty() {
+        debug!("No valid carbon chain found; returning Unknown molecule");
+        return "Unknown molecule".to_string();
+    }
+    
+    let subs_original = identify_substituents(graph, &main_chain);
+    let numbering_order = choose_numbering(&main_chain, &subs_original);
+    let final_main_chain = match numbering_order {
+        NumberingOrder::Original => main_chain.clone(),
+        NumberingOrder::Reversed => {
+            let mut rev = main_chain.clone();
+            rev.reverse();
+            rev
+        },
+    };
+    let subs_final = assign_substituent_positions(&final_main_chain, &subs_original, numbering_order);
+    let substituent_prefix = format_substituents(&subs_final);
+    
+    let chain_length = final_main_chain.len();
+    let base_name = match chain_length {
+        1 => "meth",
+        2 => "eth",
+        3 => "prop",
+        4 => "but",
+        5 => "pent",
+        6 => "hex",
+        7 => "hept",
+        8 => "oct",
+        9 => "non",
+        10 => "dec",
+        n => return format!("{}-carbon chain (not fully supported)", n),
+    };
+    
+    // Determine unsaturation (double and triple bonds) along the main chain.
+    let mut unsat_locs = Vec::new();
+    let mut double_count = 0;
+    let mut triple_count = 0;
+    for i in 0..(final_main_chain.len() - 1) {
+        let n1 = final_main_chain[i];
+        let n2 = final_main_chain[i + 1];
+        if let Some(edge) = graph.find_edge(n1, n2) {
+            match graph.edge_weight(edge) {
+                Some(Bond::Double) => {
+                    if chain_length > 2 {
+                        unsat_locs.push(i + 1);
+                    }
+                    double_count += 1;
+                },
+                Some(Bond::Triple) => {
+                    if chain_length > 2 {
+                        unsat_locs.push(i + 1);
+                    }
+                    triple_count += 1;
+                },
+                _ => {}
+            }
+        }
+    }
+    let suffix = if double_count > 0 {
+        match double_count {
+            1 => "ene",
+            2 => "diene",
+            3 => "triene",
+            _ => "ene",
+        }
+    } else if triple_count > 0 {
+        match triple_count {
+            1 => "yne",
+            2 => "diyne",
+            3 => "triyne",
+            _ => "yne",
+        }
+    } else {
+        "ane"
+    };
+    let unsaturated_base = if (double_count > 1 || triple_count > 1) && chain_length >= 4 {
+        format!("{}a", base_name)
+    } else {
+        base_name.to_string()
+    };
+    let unsat_prefix = if chain_length == 2 || (double_count == 0 && triple_count == 0) {
+        "".to_string()
+    } else {
+        let locants: Vec<String> = unsat_locs.iter().map(|loc| loc.to_string()).collect();
+        format!("{}-", locants.join(","))
+    };
+    debug!("Acyclic naming: final name composed with prefix '{}' and suffix '{}'", substituent_prefix, suffix);
+    format!("{}{}{}{}", substituent_prefix, unsat_prefix, unsaturated_base, suffix)
+}
+
+/// --- Main naming routine ---
+pub fn iupac_name(graph: &MoleculeGraph) -> String {
+    debug!("Starting IUPAC naming process");
+    if detect_ester_global(graph).is_some() {
+        debug!("Ester detected globally; using acyclic naming branch");
+        return iupac_acyclic_name(graph);
+    }
+    // NEW: Prioritize exocyclic aldehyde detection if present.
+    if let Some(name) = detect_exocyclic_aldehyde(graph) {
+        debug!("Exocyclic aldehyde detected; using that naming branch");
+        return name;
+    }
+    if let Some(ring) = find_ring(graph) {
+        debug!("Ring detected with {} atoms", ring.len());
+        if ring.len() >= 3 {
+            if ring.iter().all(|&n| graph[n].is_carbon()) {
+                debug!("Naming as cyclic alkane");
+                return iupac_cyclo_name(graph, &ring);
+            } else {
+                debug!("Naming as heterocycle");
+                return iupac_heterocyclo_name(graph, &ring);
+            }
+        }
+    }
+    debug!("No cyclic structure detected; falling back to acyclic naming");
+    iupac_acyclic_name(graph)
+}
 
 // --- NEW: Generic ring detection that does not filter out heteroatoms ---
 fn find_ring(graph: &MoleculeGraph) -> Option<Vec<NodeIndex>> {
@@ -69,7 +491,7 @@ fn iupac_heterocyclo_name(graph: &MoleculeGraph, ring: &Vec<NodeIndex>) -> Strin
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (loc, elem) in hetero_atoms {
         let group_name = match elem {
-            Element::O => "oxa".to_string(), // for oxygen
+            Element::O => "oxa".to_string(),
             Element::N => "aza".to_string(),
             Element::S => "thia".to_string(),
             _ => "hetero".to_string(),
@@ -92,11 +514,10 @@ fn iupac_heterocyclo_name(graph: &MoleculeGraph, ring: &Vec<NodeIndex>) -> Strin
         };
         format!("{}-{}{}", locant_str, multiplier, group)
     } else {
-        // (Handle multiple heteroatom types if needed)
         String::new()
     };
 
-    format!("{}cyclo{}", prefix, &base_name[5..]) // strip "cyclo" from base_name and reassemble
+    format!("{}cyclo{}", prefix, &base_name[5..])
 }
 
 // --- NEW: Numbering for heterocyclic rings ---
@@ -105,7 +526,6 @@ fn best_heterocycle_numbering(
     graph: &MoleculeGraph,
 ) -> (Vec<NodeIndex>, Vec<(usize, Element)>) {
     let n = ring.len();
-    // Start with the current order.
     let mut best_order = ring.to_vec();
     let mut best_locants: Vec<usize> = ring.iter().enumerate()
         .filter(|&(_, &node)| !graph[node].is_carbon())
@@ -151,220 +571,6 @@ fn best_heterocycle_numbering(
     (best_order, best_hetero)
 }
 
-// --- Modified main naming routine ---
-pub fn iupac_name(graph: &MoleculeGraph) -> String {
-    // 1. First, check for an ester functional group.
-    if detect_ester_global(graph).is_some() {
-        return iupac_acyclic_name(graph);
-    }
-    // First try to detect a ring (now including heterocycles).
-    if let Some(ring) = find_ring(graph) {
-        if ring.len() >= 3 {
-            // If the ring is all carbons (or aromatic carbons), use your original cyclic naming;
-            // otherwise, use the heterocyclic naming routine.
-            if ring.iter().all(|&n| graph[n].is_carbon()) {
-                return iupac_cyclo_name(graph, &ring);
-            } else {
-                return iupac_heterocyclo_name(graph, &ring);
-            }
-        }
-    }
-    // Fall back to acyclic naming.
-    iupac_acyclic_name(graph)
-}
-// NEW: Helper to detect an aldehyde on a terminal carbon.
-// Returns the index (0-based) of the main chain where a double-bonded O is found.
-fn is_aldehyde(graph: &MoleculeGraph, main_chain: &Vec<NodeIndex>) -> Option<usize> {
-    // Check first carbon of main chain
-    let first = main_chain[0];
-    for nbr in graph.neighbors(first) {
-        if !main_chain.contains(&nbr) && graph[nbr] == Element::O {
-            if let Some(edge) = graph.find_edge(first, nbr) {
-                if graph.edge_weight(edge) == Some(&Bond::Double) {
-                    return Some(0);
-                }
-            }
-        }
-    }
-    // Check last carbon of main chain
-    let last_index = main_chain.len() - 1;
-    let last = main_chain[last_index];
-    for nbr in graph.neighbors(last) {
-        if !main_chain.contains(&nbr) && graph[nbr] == Element::O {
-            if let Some(edge) = graph.find_edge(last, nbr) {
-                if graph.edge_weight(edge) == Some(&Bond::Double) {
-                    return Some(last_index);
-                }
-            }
-        }
-    }
-    None
-}
-
-
-// pub fn iupac_acyclic_name(graph: &MoleculeGraph) -> String {
-//     let main_chain = find_longest_carbon_chain(graph);
-//     if main_chain.is_empty() {
-//         return "Unknown molecule".to_string();
-//     }
-    
-//     // 1. First, try ester detection.
-//     if let Some((ester_index, _carbonyl_oxygen, alkoxy_oxygen)) = detect_ester(graph, &main_chain) {
-//         let acyl_carbon = main_chain[ester_index];
-//         let alkoxy_carbon = graph.neighbors(alkoxy_oxygen)
-//             .find(|&nbr| nbr != acyl_carbon && graph[nbr] == Element::C);
-//         if let Some(alkoxy_carb) = alkoxy_carbon {
-//             let branch_size = count_branch_carbons(graph, alkoxy_carb, alkoxy_oxygen);
-//             let alkoxy_name = match branch_size {
-//                 1 => "methyl",
-//                 2 => "ethyl",
-//                 3 => "propyl",
-//                 4 => "butyl",
-//                 5 => "pentyl",
-//                 _ => "alkyl",
-//             };
-//             let acyl_base = match main_chain.len() {
-//                 1 => "methan",
-//                 2 => "ethan",
-//                 3 => "propan",
-//                 4 => "butan",
-//                 5 => "pentan",
-//                 6 => "hexan",
-//                 7 => "heptan",
-//                 8 => "octan",
-//                 9 => "nonan",
-//                 10 => "decan",
-//                 n => return format!("{}-carbon chain (not fully supported)", n),
-//             };
-//             let acyl_name = format!("{}oate", acyl_base);
-//             return format!("{}-{}", alkoxy_name, acyl_name);
-//         }
-//     }
-    
-//     // 2. Then, check for a terminal aldehyde.
-//     if let Some(al_idx) = is_aldehyde(graph, &main_chain) {
-//         // Ensure the aldehyde carbon is at position 0.
-//         let mut aldehyde_chain = main_chain.clone();
-//         if al_idx != 0 {
-//             aldehyde_chain.reverse();
-//         }
-//         // Identify substituents.
-//         let mut subs = identify_substituents(graph, &aldehyde_chain);
-//         // Remove the "oxo" substituent (representing the C=O) at position 1.
-//         subs.retain(|(pos, name)| !(*pos == 1 && name == "oxo"));
-//         let numbering_order = choose_numbering(&aldehyde_chain, &subs);
-//         let final_chain = match numbering_order {
-//             NumberingOrder::Original => aldehyde_chain.clone(),
-//             NumberingOrder::Reversed => {
-//                 let mut rev = aldehyde_chain.clone();
-//                 rev.reverse();
-//                 rev
-//             }
-//         };
-//         let subs_final = assign_substituent_positions(&final_chain, &subs, numbering_order);
-//         let substituent_prefix = format_substituents(&subs_final);
-//         let chain_length = final_chain.len();
-//         let root = match chain_length {
-//             1 => "methan",
-//             2 => "ethan",
-//             3 => "propan",
-//             4 => "butan",
-//             5 => "pentan",
-//             6 => "hexan",
-//             7 => "heptan",
-//             8 => "octan",
-//             9 => "nonan",
-//             10 => "decan",
-//             n => return format!("{}-carbon chain (not fully supported)", n),
-//         };
-//         return format!("{}al", substituent_prefix + root);
-//     }
-    
-//     // 3. Otherwise, use standard acyclic naming.
-//     let subs_original = identify_substituents(graph, &main_chain);
-//     let numbering_order = choose_numbering(&main_chain, &subs_original);
-//     let final_main_chain = match numbering_order {
-//         NumberingOrder::Original => main_chain.clone(),
-//         NumberingOrder::Reversed => {
-//             let mut rev = main_chain.clone();
-//             rev.reverse();
-//             rev
-//         },
-//     };
-//     let subs_final = assign_substituent_positions(&final_main_chain, &subs_original, numbering_order);
-//     let substituent_prefix = format_substituents(&subs_final);
-    
-//     let chain_length = final_main_chain.len();
-//     let base_name = match chain_length {
-//         1 => "meth",
-//         2 => "eth",
-//         3 => "prop",
-//         4 => "but",
-//         5 => "pent",
-//         6 => "hex",
-//         7 => "hept",
-//         8 => "oct",
-//         9 => "non",
-//         10 => "dec",
-//         n => return format!("{}-carbon chain (not fully supported)", n),
-//     };
-    
-//     // Determine unsaturation (double and triple bonds) along the main chain.
-//     let mut unsat_locs = Vec::new();
-//     let mut double_count = 0;
-//     let mut triple_count = 0;
-//     for i in 0..(final_main_chain.len() - 1) {
-//         let n1 = final_main_chain[i];
-//         let n2 = final_main_chain[i + 1];
-//         if let Some(edge) = graph.find_edge(n1, n2) {
-//             match graph.edge_weight(edge) {
-//                 Some(Bond::Double) => {
-//                     if chain_length > 2 {
-//                         unsat_locs.push(i + 1);
-//                     }
-//                     double_count += 1;
-//                 },
-//                 Some(Bond::Triple) => {
-//                     if chain_length > 2 {
-//                         unsat_locs.push(i + 1);
-//                     }
-//                     triple_count += 1;
-//                 },
-//                 _ => {}
-//             }
-//         }
-//     }
-//     let suffix = if double_count > 0 {
-//         match double_count {
-//             1 => "ene",
-//             2 => "diene",
-//             3 => "triene",
-//             _ => "ene",
-//         }
-//     } else if triple_count > 0 {
-//         match triple_count {
-//             1 => "yne",
-//             2 => "diyne",
-//             3 => "triyne",
-//             _ => "yne",
-//         }
-//     } else {
-//         "ane"
-//     };
-//     let unsaturated_base = if (double_count > 1 || triple_count > 1) && chain_length >= 4 {
-//         format!("{}a", base_name)
-//     } else {
-//         base_name.to_string()
-//     };
-//     let unsat_prefix = if chain_length == 2 || (double_count == 0 && triple_count == 0) {
-//         "".to_string()
-//     } else {
-//         let locants: Vec<String> = unsat_locs.iter().map(|loc| loc.to_string()).collect();
-//         format!("{}-", locants.join(","))
-//     };
-//     format!("{}{}{}{}", substituent_prefix, unsat_prefix, unsaturated_base, suffix)
-// }
-
 
 #[derive(Debug, Clone, Copy)]
 enum NumberingOrder {
@@ -391,32 +597,11 @@ fn find_longest_carbon_chain(graph: &MoleculeGraph) -> Vec<NodeIndex> {
     longest_chain
 }
 
-// fn dfs_longest_path(
-//     graph: &MoleculeGraph,
-//     current: NodeIndex,
-//     visited: &mut HashSet<NodeIndex>,
-// ) -> Vec<NodeIndex> {
-//     visited.insert(current);
-//     let mut longest = vec![current];
-//     for neighbor in graph.neighbors(current) {
-//         if graph[neighbor] == Element::C && !visited.contains(&neighbor) {
-//             let mut new_visited = visited.clone();
-//             let path = dfs_longest_path(graph, neighbor, &mut new_visited);
-//             if 1 + path.len() > longest.len() {
-//                 let mut candidate = vec![current];
-//                 candidate.extend(path);
-//                 longest = candidate;
-//             }
-//         }
-//     }
-//     longest
-// }
-
 /// For each carbon in the main chain, identify any neighbor (not in the chain)
 /// as a substituent.
 fn identify_substituents(
     graph: &MoleculeGraph,
-    main_chain: &Vec<NodeIndex>,
+    main_chain: &[NodeIndex],
 ) -> Vec<(usize, String)> {
     let mut subs = Vec::new();
     let main_chain_set: HashSet<_> = main_chain.iter().cloned().collect();
@@ -515,8 +700,8 @@ fn count_branch_carbons(
 }
 
 fn choose_numbering(
-    main_chain: &Vec<NodeIndex>,
-    substituents: &Vec<(usize, String)>,
+    main_chain: &[NodeIndex],
+    substituents: &[(usize, String)],
 ) -> NumberingOrder {
     if substituents.is_empty() {
         return NumberingOrder::Original;
@@ -758,82 +943,6 @@ fn assign_substituents_on_ring(
     subs
 }
 
-/// --- ESTER DETECTION HELPER ---
-/// Scans the main chain for a carbon that has both a double-bonded oxygen (carbonyl)
-/// and a single-bonded oxygen (which connects to an alkyl group).
-/// If found, returns Some((position in main chain, carbonyl oxygen, alkoxy oxygen)).
-fn detect_ester(graph: &MoleculeGraph, main_chain: &Vec<NodeIndex>) -> Option<(usize, NodeIndex, NodeIndex)> {
-    for (i, &chain_node) in main_chain.iter().enumerate() {
-        let mut carbonyl: Option<NodeIndex> = None;
-        let mut alkoxy: Option<NodeIndex> = None;
-        for nbr in graph.neighbors(chain_node) {
-            if main_chain.contains(&nbr) {
-                continue;
-            }
-            if graph[nbr] == Element::O {
-                if let Some(edge) = graph.find_edge(chain_node, nbr) {
-                    match graph.edge_weight(edge) {
-                        Some(Bond::Double) => {
-                            carbonyl = Some(nbr);
-                        },
-                        Some(Bond::Single) => {
-                            // Check if this oxygen connects to a carbon (alkoxy group).
-                            for nbr2 in graph.neighbors(nbr) {
-                                if nbr2 != chain_node && graph[nbr2] == Element::C {
-                                    alkoxy = Some(nbr);
-                                    break;
-                                }
-                            }
-                        },
-                        _ => {}
-                    }
-                }
-            }
-        }
-        if carbonyl.is_some() && alkoxy.is_some() {
-            return Some((i, carbonyl.unwrap(), alkoxy.unwrap()));
-        }
-    }
-    None
-}
-
-// --- NEW: Global Ester Detection ---
-// Scans the entire molecule for a carbon that has a double-bonded oxygen (carbonyl)
-// and a single-bonded oxygen that connects to a carbon (alkoxy group).
-fn detect_ester_global(graph: &MoleculeGraph) -> Option<(NodeIndex, NodeIndex)> {
-    for node in graph.node_indices() {
-        if graph[node] == Element::C {
-            let mut has_carbonyl = false;
-            let mut alkoxy_oxygen: Option<NodeIndex> = None;
-            for nbr in graph.neighbors(node) {
-                if graph[nbr] == Element::O {
-                    if let Some(edge) = graph.find_edge(node, nbr) {
-                        match graph.edge_weight(edge) {
-                            Some(Bond::Double) => {
-                                has_carbonyl = true;
-                            },
-                            Some(Bond::Single) => {
-                                // Check if oxygen connects to a carbon (other than node)
-                                for nbr2 in graph.neighbors(nbr) {
-                                    if nbr2 != node && graph[nbr2] == Element::C {
-                                        alkoxy_oxygen = Some(nbr);
-                                        break;
-                                    }
-                                }
-                            },
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            if has_carbonyl && alkoxy_oxygen.is_some() {
-                return Some((node, alkoxy_oxygen.unwrap()));
-            }
-        }
-    }
-    None
-}
-
 // --- NEW: Acyl Chain Determination ---
 // Starting at the acyl carbon, find the longest path that follows only carbon atoms.
 // This chain represents the acid-derived portion of the ester.
@@ -887,35 +996,24 @@ fn alkoxy_ring_name(graph: &MoleculeGraph, start: NodeIndex) -> Option<String> {
 }
 
 /// Returns the conventional locant for the attachment in a heterocycle.
-/// It takes the best (lowest‐locant) ordering for the ring (as computed by best_heterocycle_numbering),
-/// rotates it so that the first heteroatom (non‑carbon) is at index 0, and then returns the 1‑indexed
-/// position of the attachment in that rotated order.
-/// Returns the conventional locant for the attachment in a heterocycle.
-/// Instead of simply rotating the order, this function computes the two possible
-/// circular distances from the heteroatom (the first non‑carbon in best_order)
-/// to the attachment and returns the smaller distance plus one (since the heteroatom
-/// is conventionally numbered as 1).
+/// This function computes both the clockwise and anticlockwise distances from
+/// the first heteroatom (the first non‑carbon in best_order) and returns the smaller distance plus one.
 fn conventional_locant_for_heterocycle(
     graph: &MoleculeGraph,
     best_order: &[NodeIndex],
     attach: NodeIndex,
 ) -> usize {
     let n = best_order.len();
-    // Find the index of the heteroatom in best_order (first non‑carbon).
     let h = best_order
         .iter()
         .position(|&node| graph[node].strip_aromatic() != Element::C)
         .unwrap_or(0);
-    // Find the index of the attachment.
     let a = best_order.iter().position(|&node| node == attach).unwrap_or(0);
-    // Compute the clockwise distance from heteroatom to attachment.
     let d1 = if a >= h { a - h } else { a + n - h };
-    // The anticlockwise distance is the complement.
     let d2 = n - d1;
-    let d = d1.min(d2);
-    // Convention: heteroatom is position 1, so adjacent (d==1) yields 2.
-    d + 1
+    d1.min(d2) + 1
 }
+
 
 /// Given an acyl (carbonyl) carbon that is not in a ring, check its non‑oxygen neighbors.
 /// If one is in a heterocyclic ring (i.e. the acid fragment is exocyclic),
@@ -931,6 +1029,27 @@ fn name_exocyclic_acid(graph: &MoleculeGraph, acyl_carbon: NodeIndex) -> Option<
                     let (best_order, _) = best_heterocycle_numbering(&ring, graph);
                     let locant = conventional_locant_for_heterocycle(graph, &best_order, nbr);
                     return Some(format!("{}-{}-carboxylate", base, locant));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// If the aldehyde (carbonyl) group is attached exocyclically to a heterocycle,
+/// this function computes the conventional locant from the heterocycle’s best ordering
+/// and returns a name like "furan-2-carboxaldehyde".
+fn name_exocyclic_aldehyde(graph: &MoleculeGraph, carbonyl_carbon: NodeIndex) -> Option<String> {
+    for nbr in graph.neighbors(carbonyl_carbon) {
+        if graph[nbr] == Element::O {
+            continue;
+        }
+        if let Some(ring) = find_ring_containing_node(graph, nbr) {
+            if let Some(base) = base_name_for_ring(graph, &ring) {
+                if base != "benzene" { // only for heterocycles
+                    let (best_order, _) = best_heterocycle_numbering(&ring, graph);
+                    let locant = conventional_locant_for_heterocycle(graph, &best_order, nbr);
+                    return Some(format!("{}-{}-carboxaldehyde", base, locant));
                 }
             }
         }
@@ -967,6 +1086,10 @@ fn name_acyl_group(graph: &MoleculeGraph, acyl_carbon: NodeIndex) -> String {
         return exo_name;
     }
 
+    if let Some(name) = name_exocyclic_aldehyde(graph, acyl_carbon) {
+        return name;
+    }
+
     // Fallback: treat the acyl group as acyclic.
     let acyl_chain = find_acyl_chain(graph, acyl_carbon);
     let acyl_length = acyl_chain.len();
@@ -986,98 +1109,53 @@ fn name_acyl_group(graph: &MoleculeGraph, acyl_carbon: NodeIndex) -> String {
     format!("{}oate", acyl_base)
 }
 
-// fn name_acyl_group(graph: &MoleculeGraph, acyl_carbon: NodeIndex) -> String {
-//     // First, check if the acyl carbon is directly bonded to an aromatic atom that is part of a 6-membered aromatic ring.
-//     let is_benzo = graph.neighbors(acyl_carbon).any(|nbr| {
-//         if graph[nbr] == Element::CAromatic {
-//             // Look for a ring containing this neighbor.
-//             if let Some(ring) = find_ring(graph) {
-//                 // If the neighbor is part of a 6-membered aromatic ring, we treat it as benzoic acid.
-//                 ring.contains(&nbr) && ring.len() == 6 && ring.iter().all(|&n| graph[n] == Element::CAromatic)
-//             } else {
-//                 false
-//             }
-//         } else {
-//             false
-//         }
-//     });
-//     if is_benzo {
-//         return "benzoate".to_string();
-//     }
-
-//     // Otherwise, check if the acyl carbon itself is part of a ring.
-//     if let Some(ring) = find_ring_containing_node(graph, acyl_carbon) {
-//         if ring.iter().all(|&n| graph[n] == Element::C || graph[n] == Element::CAromatic) {
-//             if ring.len() == 6 {
-//                 // This case should normally be caught above.
-//                 return "benzenecarboxylate".to_string();
-//             }
-//             let cyclic_name = iupac_cyclo_name(graph, &ring);
-//             // Strip a leading "cyclo" if present and append "carboxylate".
-//             let name = if cyclic_name.starts_with("cyclo") {
-//                 &cyclic_name[5..]
-//             } else {
-//                 &cyclic_name
-//             };
-//             return format!("cycl{}carboxylate", name);
-//         }
-//     }
-//     // Fallback: acyclic acid fragment.
-//     let acyl_chain = find_acyl_chain(graph, acyl_carbon);
-//     let acyl_length = acyl_chain.len();
-//     let acyl_base = match acyl_length {
-//         1 => "methan",
-//         2 => "ethan",
-//         3 => "propan",
-//         4 => "butan",
-//         5 => "pentan",
-//         6 => "hexan",
-//         7 => "heptan",
-//         8 => "octan",
-//         9 => "nonan",
-//         10 => "decan",
-//         n => return format!("{}-carbon acid chain (not supported)", n),
-//     };
-//     format!("{}oate", acyl_base)
-// }
 /// --- GENERAL HELPER FUNCTIONS FOR RING-BASED ACID NAMING ---
 
 /// Returns a base name for a ring based on its elemental composition.
 /// This is a data-driven lookup that minimizes hard coding.
 /// Extend this map as needed.
 fn base_name_for_ring(graph: &MoleculeGraph, ring: &[NodeIndex]) -> Option<String> {
-    let mut freq: HashMap<Element, usize> = HashMap::new();
+    let mut count_c = 0;
+    let mut count_o = 0;
+    let mut count_n = 0;
+    let mut count_s = 0;
     for &n in ring {
         let elem = graph[n].strip_aromatic();
-        // We ignore hydrogen here.
-        *freq.entry(elem).or_insert(0) += 1;
+        if elem.is_carbon() {
+            count_c += 1;
+        } else if elem.is_oxygen() {
+            count_o += 1;
+        } else if elem.is_nitrogen() {
+            count_n += 1;
+        } else if elem.is_sulfur() {
+            count_s += 1;
+        }
     }
-    // Create a sorted key (vector of (element, count)) for lookup.
-    let mut key: Vec<(Element, usize)> = freq.into_iter().collect();
-    key.sort_by_key(|&(e, _)| e.symbol());
-    // Data-driven lookup:
-    // For benzene: 6 aromatic carbons.
-    if key.iter().all(|&(e, c)| e.is_carbon() && c == 6) {
+    // For benzene: 6 carbons, no heteroatoms.
+    if count_c == 6 && count_o == 0 && count_n == 0 && count_s == 0 {
         return Some("benzene".to_string());
     }
-    // For pyridine: 5 aromatic carbons and one nitrogen.
-    if key == vec![(Element::C, 5), (Element::N, 1)] {
+    // For pyridine: 5 carbons and one nitrogen.
+    if count_c == 5 && count_n == 1 && count_o == 0 && count_s == 0 {
         return Some("pyridine".to_string());
     }
     // For furan: 4 carbons and one oxygen.
-    if key == vec![(Element::C, 4), (Element::O, 1)] {
+    if count_c == 4 && count_o == 1 && count_n == 0 && count_s == 0 {
         return Some("furan".to_string());
     }
     // For thiophene: 4 carbons and one sulfur.
-    if key == vec![(Element::C, 4), (Element::S, 1)] {
+    if count_c == 4 && count_s == 1 && count_o == 0 && count_n == 0 {
         return Some("thiophene".to_string());
     }
     // Fallback: build a generic name by concatenating element symbols and counts.
-    let name = key.into_iter()
-        .map(|(elem, count)| format!("{}{}", elem.symbol(), count))
-        .collect::<Vec<_>>()
-        .join("");
-    Some(name)
+    let mut freq: HashMap<String, usize> = HashMap::new();
+    for &n in ring {
+        let sym = graph[n].strip_aromatic().symbol().to_string();
+        *freq.entry(sym).or_insert(0) += 1;
+    }
+    let mut parts: Vec<String> = freq.into_iter().map(|(s, c)| format!("{}{}", s, c)).collect();
+    parts.sort();
+    Some(parts.join(""))
 }
 
 /// Given a ring that contains the acyl carbon, returns a systematic acid name
@@ -1112,11 +1190,11 @@ fn find_ring_containing_node(graph: &MoleculeGraph, node: NodeIndex) -> Option<V
 /// --- Alkoxy Naming Helpers ---
 /// Detects whether the candidate alkoxy carbon is a tert-butyl group.
 fn is_tert_butyl(graph: &MoleculeGraph, node: NodeIndex, exclude: NodeIndex) -> bool {
-    if graph[node] != Element::C && graph[node] != Element::CAromatic {
+    if !graph[node].is_carbon() {
         return false;
     }
     let carbon_neighbors: Vec<NodeIndex> = graph.neighbors(node)
-        .filter(|&nbr| nbr != exclude && (graph[nbr] == Element::C || graph[nbr] == Element::CAromatic))
+        .filter(|&nbr| nbr != exclude && graph[nbr].is_carbon())
         .collect();
     if carbon_neighbors.len() != 3 {
         return false;
@@ -1140,166 +1218,6 @@ fn is_tert_butyl(graph: &MoleculeGraph, node: NodeIndex, exclude: NodeIndex) -> 
 // is_aldehyde, find_carbon_ring, dfs_find_cycle, iupac_cyclo_name, identify_substituents_on_ring,
 // best_ring_numbering, assign_substituents_on_ring, detect_ester, detect_ester_global)
 // ... (keep these as in your current code) ...
-
-
-
-// --- NEW: Modified acyclic naming routine ---
-pub fn iupac_acyclic_name(graph: &MoleculeGraph) -> String {
-    // 1. First, try global ester detection.
-    // --- Ester detection branch takes highest priority ---
-    if let Some((acyl_carbon, alkoxy_oxygen)) = detect_ester_global(graph) {
-        // Get the acid part name using the generalized function.
-        let acyl_name = name_acyl_group(graph, acyl_carbon);
-        if let Some(alkoxy_carb) = graph.neighbors(alkoxy_oxygen)
-            .find(|&nbr| nbr != acyl_carbon && (graph[nbr] == Element::C || graph[nbr] == Element::CAromatic))
-        {
-            // First, check if the alkoxy fragment is part of an aromatic ring.
-            if let Some(ring_name) = alkoxy_ring_name(graph, alkoxy_carb) {
-                return format!("{}-{}", ring_name, acyl_name);
-            }
-            if is_tert_butyl(graph, alkoxy_carb, alkoxy_oxygen) {
-                return format!("tert-butyl-{}", acyl_name);
-            }
-            let branch_size = count_branch_carbons(graph, alkoxy_carb, alkoxy_oxygen);
-            let alkoxy_name = match branch_size {
-                1 => "methyl",
-                2 => "ethyl",
-                3 => "propyl",
-                4 => "butyl",
-                5 => "pentyl",
-                _ => "alkyl",
-            };
-            return format!("{}-{}", alkoxy_name, acyl_name);
-        }
-    }
-    
-    // 2. Then, check for a terminal aldehyde.
-    if let Some(al_idx) = is_aldehyde(graph, &find_longest_carbon_chain(graph)) {
-        let main_chain = find_longest_carbon_chain(graph);
-        let mut aldehyde_chain = main_chain.clone();
-        if al_idx != 0 {
-            aldehyde_chain.reverse();
-        }
-        let mut subs = identify_substituents(graph, &aldehyde_chain);
-        subs.retain(|(pos, name)| !(*pos == 1 && name == "oxo"));
-        let numbering_order = choose_numbering(&aldehyde_chain, &subs);
-        let final_chain = match numbering_order {
-            NumberingOrder::Original => aldehyde_chain.clone(),
-            NumberingOrder::Reversed => {
-                let mut rev = aldehyde_chain.clone();
-                rev.reverse();
-                rev
-            }
-        };
-        let subs_final = assign_substituent_positions(&final_chain, &subs, numbering_order);
-        let substituent_prefix = format_substituents(&subs_final);
-        let chain_length = final_chain.len();
-        let root = match chain_length {
-            1 => "methan",
-            2 => "ethan",
-            3 => "propan",
-            4 => "butan",
-            5 => "pentan",
-            6 => "hexan",
-            7 => "heptan",
-            8 => "octan",
-            9 => "nonan",
-            10 => "decan",
-            n => return format!("{}-carbon chain (not fully supported)", n),
-        };
-        return format!("{}al", substituent_prefix + root);
-    }
-    
-    // 3. Otherwise, use standard acyclic naming.
-    let main_chain = find_longest_carbon_chain(graph);
-    if main_chain.is_empty() {
-        return "Unknown molecule".to_string();
-    }
-    
-    let subs_original = identify_substituents(graph, &main_chain);
-    let numbering_order = choose_numbering(&main_chain, &subs_original);
-    let final_main_chain = match numbering_order {
-        NumberingOrder::Original => main_chain.clone(),
-        NumberingOrder::Reversed => {
-            let mut rev = main_chain.clone();
-            rev.reverse();
-            rev
-        },
-    };
-    let subs_final = assign_substituent_positions(&final_main_chain, &subs_original, numbering_order);
-    let substituent_prefix = format_substituents(&subs_final);
-    
-    let chain_length = final_main_chain.len();
-    let base_name = match chain_length {
-        1 => "meth",
-        2 => "eth",
-        3 => "prop",
-        4 => "but",
-        5 => "pent",
-        6 => "hex",
-        7 => "hept",
-        8 => "oct",
-        9 => "non",
-        10 => "dec",
-        n => return format!("{}-carbon chain (not fully supported)", n),
-    };
-    
-    // Determine unsaturation (double and triple bonds) along the main chain.
-    let mut unsat_locs = Vec::new();
-    let mut double_count = 0;
-    let mut triple_count = 0;
-    for i in 0..(final_main_chain.len() - 1) {
-        let n1 = final_main_chain[i];
-        let n2 = final_main_chain[i + 1];
-        if let Some(edge) = graph.find_edge(n1, n2) {
-            match graph.edge_weight(edge) {
-                Some(Bond::Double) => {
-                    if chain_length > 2 {
-                        unsat_locs.push(i + 1);
-                    }
-                    double_count += 1;
-                },
-                Some(Bond::Triple) => {
-                    if chain_length > 2 {
-                        unsat_locs.push(i + 1);
-                    }
-                    triple_count += 1;
-                },
-                _ => {}
-            }
-        }
-    }
-    let suffix = if double_count > 0 {
-        match double_count {
-            1 => "ene",
-            2 => "diene",
-            3 => "triene",
-            _ => "ene",
-        }
-    } else if triple_count > 0 {
-        match triple_count {
-            1 => "yne",
-            2 => "diyne",
-            3 => "triyne",
-            _ => "yne",
-        }
-    } else {
-        "ane"
-    };
-    let unsaturated_base = if (double_count > 1 || triple_count > 1) && chain_length >= 4 {
-        format!("{}a", base_name)
-    } else {
-        base_name.to_string()
-    };
-    let unsat_prefix = if chain_length == 2 || (double_count == 0 && triple_count == 0) {
-        "".to_string()
-    } else {
-        let locants: Vec<String> = unsat_locs.iter().map(|loc| loc.to_string()).collect();
-        format!("{}-", locants.join(","))
-    };
-    format!("{}{}{}{}", substituent_prefix, unsat_prefix, unsaturated_base, suffix)
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -1564,12 +1482,8 @@ mod tests {
     fn test_esters() {
         // A list of tuples: (SMILES string, expected IUPAC name)
         let smiles_and_correct_names = vec![
-            // Esters
-            // Methyl acetate: CH₃COOCH₃
             ("COC(C)=O", "methyl-ethanoate"),
-            // Ethyl acetate: CH₃COOC₂H₅
             ("CC(=O)OCC", "ethyl-ethanoate"),
-            // Propyl propanoate: C₂H₅COOC₃H₇
             ("CCC(=O)OCCC", "propyl-propanoate"),
             ("CCCCOC(=O)C", "butyl-ethanoate"),
             ("C(CC)(=O)OC", "methyl-propanoate"),
@@ -1581,6 +1495,12 @@ mod tests {
             ("CC(C)(C)OC(=O)C", "tert-butyl-ethanoate"),
             ("O=C(OC1=CC=CC=C1)C", "phenyl-ethanoate"),
             ("COC(=O)C=1OC=CC1", "methyl-furan-2-carboxylate"),
+            ("COC(=O)C=1SC=CC1", "methyl-thiophene-2-carboxylate"),
+            ("COC(=O)C1=NC=CC=C1", "methyl-pyridine-2-carboxylate"),
+            ("C(C)OC(=O)C=1C=NC=CC1", "ethyl-pyridine-3-carboxylate"),
+            ("O=C(OCCC)c1ccccc1", "propyl-benzoate"),
+            // ("C(C)(C)OC(C1=CC=CC=C1)=O", "isopropyl-benzoate"),
+            // ("COC(C(CCCC)CC)=O", "methyl-2-ethylhexanoate")
         ];
 
         for (smiles, correct_name) in smiles_and_correct_names {
@@ -1642,6 +1562,7 @@ mod tests {
     
     #[test]
     fn test_aldehydes() {
+        // init_logging(tracing::metadata::LevelFilter::TRACE);
         // A list of tuples: (SMILES string, expected IUPAC name)
         let smiles_and_correct_names = vec![
             // Aldehydes
@@ -1649,6 +1570,7 @@ mod tests {
             ("CC=O", "ethanal"),
             ("CCC=O", "propanal"),
             ("CC(C)C=O", "2-methyl-propanal"),
+            ("O1C(=CC=C1)C=O", "furan-2-carboxaldehyde")
         ];
 
         for (smiles, correct_name) in smiles_and_correct_names {

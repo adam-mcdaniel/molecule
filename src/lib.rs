@@ -18,6 +18,14 @@ pub use visualize::*;
 mod naming;
 pub use naming::*;
 
+pub fn init_logging(level: tracing::metadata::LevelFilter) {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(level)
+        .without_time()
+        // .with_target(false)
+        .try_init();
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Element {
     C,
