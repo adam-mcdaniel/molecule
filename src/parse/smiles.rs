@@ -1,17 +1,29 @@
 // src/parser.rs
 
-use crate::{Bond, Bond::*, Element, Element::*};
+use crate::{Bond, Bond::*, Element};
 use crate::*;
 use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
 use crate::MoleculeGraph;
+use anyhow::Result;
+use thiserror::Error;
+
+use crate::Error;
+use crate::ParseError;
 
 // src/parser.rs
 use std::fmt::Write; // Correctly import the Write trait
 
-/// Helper function to determine if an element is aromatic
-fn is_aromatic(element: &Element) -> bool {
-    matches!(element, CAromatic | NAromatic | OAromatic | SAromatic)
+#[derive(Error, Debug)]
+pub enum SmilesError {
+    #[error("Branch start '(' at position {0} without a current atom")]
+    BranchNoCurrentAtom(usize),
+    #[error("Branch end ')' at position {0} without a matching '('")]
+    BranchEndNoStart(usize),
+    #[error("Ring closure digit '{0}' at position {1} without a current atom")]
+    RingClosureNoCurrentAtom(char, usize),
+    #[error("Unclosed bracket '[' at position {0}")]
+    UnclosedBracket(usize),
 }
 
 /// Parses a SMILES string into a MoleculeGraph.
@@ -23,7 +35,8 @@ fn is_aromatic(element: &Element) -> bool {
 /// # Returns
 ///
 /// * `Result<MoleculeGraph, String>` - The parsed molecular graph or an error message.
-pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
+pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph> {
+    use ElementType::*;
     let mut graph = MoleculeGraph::new_undirected();
     let mut current_atom: Option<NodeIndex> = None;
     let mut bond_type = Single; // Default bond type
@@ -42,10 +55,7 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                 if let Some(atom) = current_atom {
                     branch_stack.push(atom);
                 } else {
-                    return Err(format!(
-                        "Branch start '(' at position {} without a current atom",
-                        i
-                    ));
+                    return Err(SmilesError::BranchNoCurrentAtom(i)).context(format!("While parsing {smiles}"));
                 }
                 i += 1;
             }
@@ -53,10 +63,11 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                 // End of a branch: pop from stack
                 current_atom = branch_stack.pop();
                 if current_atom.is_none() {
-                    return Err(format!(
-                        "Branch end ')' at position {} without a matching '('",
-                        i
-                    ));
+                    // return Err(format!(
+                    //     "Branch end ')' at position {} without a matching '('",
+                    //     i
+                    // ));
+                    return Err(SmilesError::BranchEndNoStart(i)).context(format!("While parsing {smiles}"));
                 }
                 i += 1;
             }
@@ -68,10 +79,7 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                     '#' => Triple,
                     ':' => Aromatic, // Assume ':' represents aromatic bond
                     _ => {
-                        return Err(format!(
-                            "Unknown bond type '{}' at position {}",
-                            c, i
-                        ))
+                        return Err(SmilesError::BranchEndNoStart(i)).context(format!("While parsing {smiles}"));
                     }
                 };
                 i += 1;
@@ -82,7 +90,7 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                 if let Some(&start_atom) = ring_map.get(&ring_number) {
                     // Create bond between current_atom and start_atom
                     let bond_to_use = if let Some(current) = current_atom {
-                        if is_aromatic(&graph[start_atom]) && is_aromatic(&graph[current]) {
+                        if graph[start_atom].is_aromatic() && graph[current].is_aromatic() {
                             Bond::Aromatic
                         } else {
                             bond_type.clone()
@@ -91,10 +99,11 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                         bond_type.clone()
                     };
                     graph.add_edge(
-                        current_atom.ok_or(format!(
-                            "Ring closure digit '{}' at position {} without a current atom",
-                            ring_number, i
-                        ))?,
+                        // current_atom.ok_or(format!(
+                        //     "Ring closure digit '{}' at position {} without a current atom",
+                        //     ring_number, i
+                        // ))?,
+                        current_atom.ok_or(SmilesError::RingClosureNoCurrentAtom(c, i)).context(format!("While parsing {smiles}"))?,
                         start_atom,
                         bond_to_use,
                     );
@@ -106,10 +115,11 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                     // Store the current_atom for future ring closure
                     ring_map.insert(
                         ring_number,
-                        current_atom.ok_or(format!(
-                            "Ring closure digit '{}' at position {} without a current atom",
-                            ring_number, i
-                        ))?,
+                        // current_atom.ok_or(format!(
+                        //     "Ring closure digit '{}' at position {} without a current atom",
+                        //     ring_number, i
+                        // ))?,
+                        current_atom.ok_or(SmilesError::RingClosureNoCurrentAtom(c, i)).context(format!("While parsing {smiles}"))?,
                     );
                 }
                 i += 1;
@@ -124,10 +134,10 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                     let end = i + end_relative;
                     // Extract the content inside brackets
                     let atom_str: String = chars[i + 1..end].iter().collect();
-                    let element = parse_element(&atom_str).expect("Failed to parse element in brackets");
+                    let element = Element::from_smiles(&atom_str).expect("Failed to parse element in brackets");
                     let new_atom = graph.add_node(element);
                     if let Some(prev_atom) = current_atom {
-                        let bond_to_use = if is_aromatic(&graph[prev_atom]) && is_aromatic(&element) {
+                        let bond_to_use = if graph[prev_atom].is_aromatic() && element.is_aromatic() {
                             Bond::Aromatic
                         } else {
                             bond_type.clone()
@@ -138,7 +148,7 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                     current_atom = Some(new_atom);
                     i = end + 1;
                 } else {
-                    return Err(format!("Unclosed bracket '[' at position {}", i));
+                    return Err(SmilesError::UnclosedBracket(i)).context(format!("While parsing {smiles}"));
                 }
             }
             _ => {
@@ -149,7 +159,7 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                     // Form the two-character candidate.
                     let candidate = &smiles[i..i+2];
                     // If the candidate forms a valid element...
-                    if parse_element(candidate).is_ok() {
+                    if Element::from_smiles(candidate).is_ok() {
                         // If current char is uppercase, always use the two-letter element.
                         if c.is_uppercase() {
                             atom_str.push_str(candidate);
@@ -157,7 +167,7 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                         } else {
                             // For aromatic (lowercase) atoms, check if the second char by itself is valid.
                             let second = &smiles[i+1..i+2];
-                            if parse_element(second).is_ok() {
+                            if Element::from_smiles(second).is_ok() {
                                 // The second letter is valid on its own, so treat current as a single atom.
                                 atom_str.push(c);
                                 i += 1;
@@ -179,11 +189,11 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
                 }
             
                 // Now parse the element from atom_str.
-                let element = parse_element(&atom_str).expect("Failed to parse element");
+                let element = Element::from_smiles(&atom_str).context("Failed to parse element")?;
                 let new_atom = graph.add_node(element);
                 if let Some(prev_atom) = current_atom {
-                    let is_prev_aromatic = is_aromatic(&graph[prev_atom]);
-                    let is_new_aromatic = is_aromatic(&element);
+                    let is_prev_aromatic = graph[prev_atom].is_aromatic();
+                    let is_new_aromatic = element.is_aromatic();
                     let bond_to_use = if is_prev_aromatic && is_new_aromatic {
                         Bond::Aromatic
                     } else {
@@ -200,40 +210,21 @@ pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph, String> {
     Ok(graph)
 }
 
-fn parse_element(symbol: &str) -> Result<Element, String> {
-    match symbol {
-        "C" => Ok(Element::C),
-        "c" => Ok(Element::CAromatic),
-        "H" => Ok(Element::H),
-        "O" => Ok(Element::O),
-        "o" => Ok(Element::OAromatic),
-        "N" => Ok(Element::N),
-        "n" => Ok(Element::NAromatic),
-        "Cl" => Ok(Element::Cl),
-        "Br" => Ok(Element::Br),
-        "F" => Ok(Element::F),
-        "S" => Ok(Element::S),
-        "s" => Ok(Element::SAromatic),
-        // ... handle other elements as needed
-        _ => Err(format!("Unknown element symbol '{}'", symbol)),
-    }
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use petgraph::dot::Dot;
+    use ElementType::*;
 
     // Assuming visualize_graph is implemented as per the previous assistant's message
     // Ensure you have the visualize_graph function in your parser.rs
 
     #[test]
     fn test_parse_ethanol() {
+
         let smiles = "CCO"; // Ethanol
         let molecule = parse_smiles(smiles).expect("Failed to parse SMILES");
-        visualize_graph(&molecule, "ethanol.dot", Some("ethanol.png"))
-            .expect("Failed to visualize graph");
+        // visualize_graph(&molecule, "ethanol.dot", Some("ethanol.png"))
+        //     .expect("Failed to visualize graph");
 
         assert_eq!(molecule.node_count(), 3); // 2 Carbons, 1 Oxygen
 
@@ -263,8 +254,8 @@ mod tests {
     fn test_parse_cyclohexane() {
         let smiles = "C1CCCCC1"; // Cyclohexane
         let molecule = parse_smiles(smiles).expect("Failed to parse SMILES");
-        visualize_graph(&molecule, "cyclohexane.dot", Some("cyclohexane.png"))
-            .expect("Failed to visualize graph");
+        // visualize_graph(&molecule, "cyclohexane.dot", Some("cyclohexane.png"))
+        //     .expect("Failed to visualize graph");
         println!("Graph: {:#?}", molecule);
         // assert_eq!(molecule.node_count(), 6); // 6 Carbons
 
@@ -282,7 +273,7 @@ mod tests {
             let degree = molecule.edges(node).count();
             assert_eq!(degree, 2, "Node {} has degree {}", node.index(), degree);
         }
-        println!("Name: {}", iupac_name(&molecule));
+        // println!("Name: {}", iupac_name(&molecule));
     }
 
     #[test]
@@ -291,10 +282,10 @@ mod tests {
             .to_string(); // Ciprofloxacin
 
         let molecule = parse_smiles(&smiles).expect("Failed to parse SMILES");
-        visualize_graph(&molecule, "ciprofloxacin.dot", Some("ciprofloxacin.png"))
-            .expect("Failed to visualize graph");
+        // visualize_graph(&molecule, "ciprofloxacin.dot", Some("ciprofloxacin.png"))
+        //     .expect("Failed to visualize graph");
         println!("Graph: {:#?}", molecule);
-        println!("Name: {}", iupac_name(&molecule));
+        // println!("Name: {}", iupac_name(&molecule));
     }
 
     #[test]
@@ -303,18 +294,18 @@ mod tests {
             .to_string(); // Ciprofloxacin
 
         let molecule = parse_smiles(&smiles).expect("Failed to parse SMILES");
-        visualize_graph(&molecule, "1-choloro-ethane.dot", Some("1-choloro-ethane.png"))
-            .expect("Failed to visualize graph");
+        // visualize_graph(&molecule, "1-choloro-ethane.dot", Some("1-choloro-ethane.png"))
+        //     .expect("Failed to visualize graph");
         println!("Graph: {:#?}", molecule);
-        println!("Name: {}", iupac_name(&molecule));
+        // println!("Name: {}", iupac_name(&molecule));
     }
 
     #[test]
     fn test_parse_isobutane() {
         let smiles = "CC(C)C"; // Isobutane
         let molecule = parse_smiles(smiles).expect("Failed to parse SMILES");
-        visualize_graph(&molecule, "isobutane.dot", Some("isobutane.png"))
-            .expect("Failed to visualize graph");
+        // visualize_graph(&molecule, "isobutane.dot", Some("isobutane.png"))
+        //     .expect("Failed to visualize graph");
 
         assert_eq!(molecule.node_count(), 4); // 4 Carbons
 
@@ -352,6 +343,17 @@ mod tests {
             (e.source() == NodeIndex::new(1) && e.target() == NodeIndex::new(3))
                 || (e.source() == NodeIndex::new(3) && e.target() == NodeIndex::new(1))
         }));
-        println!("Name: {}", iupac_name(&molecule));
+        // println!("Name: {}", iupac_name(&molecule));
+    }
+
+    #[test]
+    fn test_parse_phenylalanine() {
+        let smiles = "NC(Cc1ccccc1)C(=O)O"
+            .to_string(); // Phenylalanine
+
+        let molecule = parse_smiles(&smiles).expect("Failed to parse SMILES");
+        visualize_graph(&molecule, "phenylalanine.dot", Some("phenylalanine.png"))
+            .expect("Failed to visualize graph");
+        println!("Graph: {:#?}", molecule);
     }
 }

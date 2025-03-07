@@ -1,14 +1,16 @@
 // src/parser.rs
 
-use crate::{Bond, Bond::*, Element, Element::*};
+use crate::{Bond, Bond::*, Element, ElementType::*};
 use crate::MoleculeGraph;
-use petgraph::graph::NodeIndex;
-use std::collections::HashMap;
 use std::io::Write;
 use std::fmt::Write as FmtWrite;
 use petgraph::prelude::EdgeRef;
 use super::*;
-use std::collections::HashSet;
+
+lazy_static::lazy_static! {
+    static ref VISUALIZE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
 /// Visualizes the MoleculeGraph by exporting it to a DOT format and optionally rendering it as an image.
 ///
 /// # Arguments
@@ -25,8 +27,23 @@ pub fn visualize_graph(
     output_dot: &str,
     output_image: Option<&str>,
 ) -> Result<(), String> {
+    if output_dot.is_empty() {
+        return Err("Output DOT path is empty".to_string());
+    }
+
+    if let Some(image_path) = output_image {
+        if image_path.is_empty() {
+            return Err("Output image path is empty".to_string());
+        }
+    }
+
+    let mut graph = graph.clone();
+    graph.hydrogenate();
+
     // Generate the DOT string with custom edge labels and styles
-    let dot_string = generate_dot(graph);
+    let dot_string = generate_dot(&graph);
+
+    let lock = VISUALIZE_LOCK.lock().unwrap();
 
     // Write the DOT string to a file
     let mut file = std::fs::File::create(output_dot)
@@ -54,7 +71,7 @@ pub fn visualize_graph(
 
         println!("Image rendered to {}", image_path);
     }
-
+    drop(lock);
     Ok(())
 }
 
@@ -71,19 +88,22 @@ fn generate_dot(graph: &MoleculeGraph) -> String {
     // Use a String to accumulate the DOT representation.
     let mut dot_output = String::new();
     writeln!(dot_output, "graph Molecule {{").unwrap();
-    writeln!(dot_output, "    layout=neato; rankdir=LR;").unwrap();
+    writeln!(dot_output, "    layout=neato; overlap=prism;").unwrap();
     // Allow multiple edges between the same nodes.
     writeln!(dot_output, "    multiedge=true;").unwrap();
 
     // Define node labels (element symbols) and colors.
     for node in graph.node_indices() {
         let element = &graph[node];
-        let node_color = element_to_color(element);
+        let node_color = element_to_color(&element.kind);
+        
+        let diameter = element.diameter() / 2.0;
+
         writeln!(
             dot_output,
-            "    {} [label=\"{}\", fontcolor=white, shape=circle, style=filled, fillcolor={color}];",
+            "    {} [label=\"{}\", width={diameter}, fontcolor=white, shape=circle, style=filled, fillcolor={color}];",
             node.index(),
-            element_to_string(element),
+            element.symbol(),
             color = node_color
         )
         .unwrap();
@@ -93,8 +113,12 @@ fn generate_dot(graph: &MoleculeGraph) -> String {
     // For undirected graphs, we output each edge once (when source < target)
     // and output multiple edge statements for double or triple bonds.
     for edge in graph.edge_references() {
-        let source = edge.source().index();
-        let target = edge.target().index();
+        let source = edge.source();
+        let target = edge.target();
+
+        let source_element = &graph[source];
+        let target_element = &graph[target];
+
         let bond = edge.weight();
         let (style, penwidth, extra) = bond_to_style(bond);
 
@@ -105,11 +129,19 @@ fn generate_dot(graph: &MoleculeGraph) -> String {
             _ => 1,
         };
 
-        for _ in 0..count {
+        let has_hydrogen = source_element.is_hydrogen() || target_element.is_hydrogen();
+        let len = if has_hydrogen {
+            0.75
+        } else {
+            1.75
+        };
+
+        for i in 0..count {
             writeln!(
                 dot_output,
-                "    {} -- {} [style={}, penwidth={}, {}];",
-                source, target, style, penwidth, extra
+                "    {} -- {} [len={len}, weight={weight}, style={}, penwidth={}, {}];",
+                source.index(), target.index(), style, penwidth, extra,
+                weight = if i == 0 && !has_hydrogen { 3 } else if has_hydrogen { 1 } else { 0 } * 10,
             )
             .unwrap();
         }
@@ -120,42 +152,39 @@ fn generate_dot(graph: &MoleculeGraph) -> String {
     dot_output
 }
 
-/// Converts an Element enum to its string representation.
-fn element_to_string(element: &Element) -> String {
-    use Element::*;
-    match element {
-        C => "C".to_string(),
-        CAromatic => "C".to_string(),
-        H => "H".to_string(),
-        O => "O".to_string(),
-        OAromatic => "O".to_string(),
-        N => "N".to_string(),
-        NAromatic => "N".to_string(),
-        Cl => "Cl".to_string(),
-        Br => "Br".to_string(),
-        F => "F".to_string(),
-        S => "S".to_string(),
-        SAromatic => "S".to_string(),
-        // Add other elements as needed
-    }
-}
+// /// Converts an Element enum to its string representation.
+// fn element_to_string(element: &Element) -> String {
+//     match element {
+//         C => "C".to_string(),
+//         CAromatic => "C".to_string(),
+//         H => "H".to_string(),
+//         O => "O".to_string(),
+//         OAromatic => "O".to_string(),
+//         N => "N".to_string(),
+//         NAromatic => "N".to_string(),
+//         Cl => "Cl".to_string(),
+//         Br => "Br".to_string(),
+//         F => "F".to_string(),
+//         S => "S".to_string(),
+//         SAromatic => "S".to_string(),
+//         // Add other elements as needed
+//     }
+// }
 
 /// Assigns colors to elements for visualization.
-fn element_to_color(element: &Element) -> &'static str {
+fn element_to_color(element: &ElementType) -> &'static str {
     match element {
         C => "black",
-        CAromatic => "black",
         H => "gray",
         O => "red",
-        OAromatic => "red",
         N => "blue",
-        NAromatic => "blue",
         Cl => "darkgreen",
         Br => "brown",
-        F => "pink",
-        S => "yellow",
-        SAromatic => "yellow",
+        F => "plum3",
+        S => "darkgoldenrod",
+        I => "purple",
         // Add other elements with distinct colors
+        RGroup(_) => "orange",
     }
 }
 
@@ -182,20 +211,9 @@ mod tests {
     use super::*;
     use petgraph::prelude::*;
 
-    #[test]
-    fn test_element_to_string() {
-        assert_eq!(element_to_string(&Element::C), "C");
-        assert_eq!(element_to_string(&Element::H), "H");
-        assert_eq!(element_to_string(&Element::O), "O");
-        assert_eq!(element_to_string(&Element::N), "N");
-        assert_eq!(element_to_string(&Element::Cl), "Cl");
-        assert_eq!(element_to_string(&Element::Br), "Br");
-        assert_eq!(element_to_string(&Element::F), "F");
-        assert_eq!(element_to_string(&Element::CAromatic), "C");
-        assert_eq!(element_to_string(&Element::OAromatic), "O");
-        assert_eq!(element_to_string(&Element::NAromatic), "N");
-        assert_eq!(element_to_string(&Element::SAromatic), "S");
-    }
+    // #[test]
+    // fn test_element_to_string() {
+    // }
 
     #[test]
     fn draw_ethanol() {

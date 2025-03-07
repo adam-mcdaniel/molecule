@@ -25,7 +25,7 @@ fn detect_ester_global(graph: &MoleculeGraph) -> Option<(NodeIndex, NodeIndex)> 
                             Some(Bond::Single) => {
                                 // Check if oxygen connects to a carbon (other than node)
                                 for nbr2 in graph.neighbors(nbr) {
-                                    if nbr2 != node && (graph[nbr2] == Element::C || graph[nbr2] == Element::CAromatic) {
+                                    if nbr2 != node && (graph[nbr2].is_carbon()) {
                                         alkoxy_oxygen = Some(nbr);
                                         debug!("Found alkoxy oxygen {:?} connected to node {:?} from {:?}", nbr, node, nbr2);
                                         break;
@@ -96,7 +96,7 @@ fn dfs_component(graph: &MoleculeGraph, start: NodeIndex, exclude: NodeIndex) ->
                 if nbr == exclude {
                     continue;
                 }
-                if graph[nbr] == Element::C || graph[nbr] == Element::CAromatic {
+                if graph[nbr].is_carbon() {
                     if !visited.contains(&nbr) {
                         stack.push(nbr);
                     }
@@ -184,7 +184,7 @@ fn iupac_ester_name(graph: &MoleculeGraph, acyl_carbon: NodeIndex, alkoxy_oxygen
     debug!("Naming ester: acyl carbon {:?}, alkoxy oxygen {:?}", acyl_carbon, alkoxy_oxygen);
     let acyl_name = name_acyl_group(graph, acyl_carbon);
     if let Some(alkoxy_carb) = graph.neighbors(alkoxy_oxygen)
-        .find(|&nbr| nbr != acyl_carbon && (graph[nbr] == Element::C || graph[nbr] == Element::CAromatic))
+        .find(|&nbr| nbr != acyl_carbon && (graph[nbr].is_carbon()))
     {
         if let Some(ring_name) = alkoxy_ring_name(graph, alkoxy_carb) {
             debug!("Using aromatic alkoxy ring name: {}", ring_name);
@@ -817,7 +817,7 @@ fn dfs_find_cycle(
 /// Returns the IUPAC name for a cyclic molecule (cycloalkane possibly with substituents).
 fn iupac_cyclo_name(graph: &MoleculeGraph, ring: &Vec<NodeIndex>) -> String {
     // Check if the ring is fully aromatic.
-    let is_aromatic_ring = ring.iter().all(|&n| graph[n] == Element::CAromatic);
+    let is_aromatic_ring = ring.iter().all(|&n| graph[n].is_aromatic() && graph[n].is_carbon());
     
     if is_aromatic_ring && ring.len() == 6 {
         // Identify substituents on the aromatic ring.
@@ -1006,7 +1006,7 @@ fn conventional_locant_for_heterocycle(
     let n = best_order.len();
     let h = best_order
         .iter()
-        .position(|&node| graph[node].strip_aromatic() != Element::C)
+        .position(|&node| graph[node].is_heteroatom())
         .unwrap_or(0);
     let a = best_order.iter().position(|&node| node == attach).unwrap_or(0);
     let d1 = if a >= h { a - h } else { a + n - h };
@@ -1120,7 +1120,7 @@ fn base_name_for_ring(graph: &MoleculeGraph, ring: &[NodeIndex]) -> Option<Strin
     let mut count_n = 0;
     let mut count_s = 0;
     for &n in ring {
-        let elem = graph[n].strip_aromatic();
+        let elem = graph[n];
         if elem.is_carbon() {
             count_c += 1;
         } else if elem.is_oxygen() {
@@ -1150,7 +1150,7 @@ fn base_name_for_ring(graph: &MoleculeGraph, ring: &[NodeIndex]) -> Option<Strin
     // Fallback: build a generic name by concatenating element symbols and counts.
     let mut freq: HashMap<String, usize> = HashMap::new();
     for &n in ring {
-        let sym = graph[n].strip_aromatic().symbol().to_string();
+        let sym = graph[n].symbol().to_string();
         *freq.entry(sym).or_insert(0) += 1;
     }
     let mut parts: Vec<String> = freq.into_iter().map(|(s, c)| format!("{}{}", s, c)).collect();
@@ -1202,7 +1202,7 @@ fn is_tert_butyl(graph: &MoleculeGraph, node: NodeIndex, exclude: NodeIndex) -> 
     // Check that each neighbor is terminal.
     for nbr in carbon_neighbors {
         let count = graph.neighbors(nbr)
-            .filter(|&x| x != node && (graph[x] == Element::C || graph[x] == Element::CAromatic))
+            .filter(|&x| x != node && graph[x].is_carbon())
             .count();
         if count != 0 {
             return false;
@@ -1494,8 +1494,8 @@ mod tests {
             ("O=C(OCC)c1ccccc1", "ethyl-benzoate"),
             ("CC(C)(C)OC(=O)C", "tert-butyl-ethanoate"),
             ("O=C(OC1=CC=CC=C1)C", "phenyl-ethanoate"),
-            ("COC(=O)C=1OC=CC1", "methyl-furan-2-carboxylate"),
-            ("COC(=O)C=1SC=CC1", "methyl-thiophene-2-carboxylate"),
+            ("COC(=O)C1=CC=CO1", "methyl-furan-2-carboxylate"),
+            ("COC(=O)C1=CC=CS1", "methyl-thiophene-2-carboxylate"),
             ("COC(=O)C1=NC=CC=C1", "methyl-pyridine-2-carboxylate"),
             ("C(C)OC(=O)C=1C=NC=CC1", "ethyl-pyridine-3-carboxylate"),
             ("O=C(OCCC)c1ccccc1", "propyl-benzoate"),
