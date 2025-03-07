@@ -166,6 +166,12 @@ impl ElementType {
     }
 }
 
+impl From<Element> for ElementType {
+    fn from(element: Element) -> Self {
+        element.kind
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Element {
     pub kind: ElementType,

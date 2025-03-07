@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, fmt::{Debug, Formatter, Result as FmtResult}, ops::RangeBounds};
 
 use petgraph::graph::Node;
-use anyhow::{Result, Context, anyhow};
+use anyhow::{Result, Context, anyhow, bail};
 use super::*;
 use tracing::*;
 
@@ -149,7 +149,7 @@ impl Substituent {
                             count += 1;
                             chars.next();
                         }
-                        println!("R group count: {}", count);
+                        debug!("R group count: {}", count);
                         let r_group = Element::r_group(count);
                         let new_node = graph.add_node(r_group);
                         if let Some(prev) = current_node {
@@ -641,7 +641,8 @@ impl Substituent {
             .then_connect(Substituent::methyl()).unwrap()
     }
 
-    pub fn halide(elem: ElementType) -> Self {
+    pub fn halide(elem: impl Into<ElementType>) -> Self {
+        let elem = elem.into();
         let mut graph = MoleculeGraph::default();
         let halide = graph.add_node(elem.into());
         let r1 = graph.add_node(Element::r_group(0));
@@ -1021,7 +1022,25 @@ impl OrganicMolecule {
         Ok(OrganicMolecule::from(substituent))
     }
 
+    pub fn bind(&self, sites: impl IntoIterator<Item=Self>) -> Result<Self> {
+        let sites = sites.into_iter().collect::<Vec<_>>();
+        // Confirm we have enough sites to bind
+        if self.count_r_groups() < sites.len() {
+            bail!("Not enough R groups in the target molecule to bind all sites");
+        }
 
+        // Create a new organic molecule
+        let mut graph = UnGraph::new_undirected();
+        let root = graph.add_node(self.clone());
+
+        // Bind the sites to the molecule
+        for site in sites {
+            let node = graph.add_node(site);
+            graph.add_edge(root, node, 0);
+        }
+
+        Ok(OrganicMolecule::Compound(graph))
+    }
 
     /// Match an ester functional group in the given graph.
     ///
@@ -1392,6 +1411,10 @@ impl OrganicMolecule {
 
     pub fn to_smiles(&self) -> Result<String> {
         Ok(molecule_to_smiles(&self.to_molecule_graph()))
+    }
+
+    pub fn to_iupac(&self) -> Result<String> {
+        Ok(iupac_name(&self.to_molecule_graph()))
     }
 }
 

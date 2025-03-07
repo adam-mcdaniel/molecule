@@ -1,26 +1,42 @@
-use molecule::{parse_smiles, visualize_graph, OrganicMolecule};
+use molecule::{Element, Substituent, OrganicMolecule};
 
 fn main() {
-    // let smiles = "COC(C)=Oasdf";
     
-    // let molecule = parse_smiles(smiles).expect("Failed to parse SMILES");
     
-    // // assert_eq!(molecule.node_count(), 3); // 2 Carbons, 1 Oxygen
-    
-    // println!("{:#?}", molecule);
+    let adams_custom_substituent = Substituent::parse_smiles("C1=C(CCCR)C=C(CCR')C=C(CR'')1").unwrap();
+    println!("Adam's custom substituent: {:?}", adams_custom_substituent);
 
-    // visualize_graph(&molecule, "benzene.dot", Some("benzene.png")).expect("Failed to visualize graph");
+    let molecule = OrganicMolecule::from(adams_custom_substituent)
+        .bind([
+            // Bind a nitrogen to R
+            Element::N.into(),
+            // Bind a phenyl group to R'
+            Substituent::phenyl_group().into(),
+            // Bind another, nested bound substituent to R''
+            OrganicMolecule::from(Substituent::parse_smiles("RNNNR'").unwrap())
+                // Take 3 nitrogens, bind a chlorine to the first one,
+                // then bind the other side to my custom substituent
+                .bind([Substituent::halide(Element::Cl).into()]).unwrap(),
+        ])
+        .unwrap();
 
-    let benzyl_acetate = OrganicMolecule::parse_smiles("c1ccccc1COC(=O)C").unwrap();
-    println!("{:#?}", benzyl_acetate);
-    benzyl_acetate.visualize("benzyl_acetate.png").unwrap();
+    molecule.visualize("binding-to-sites.png").unwrap();
 
-    let isoamyl_acetate = OrganicMolecule::parse_smiles("O=C(OCCC(C)C)C").unwrap();
-    println!("{:#?}", isoamyl_acetate);
-    isoamyl_acetate.visualize("isoamyl_acetate.png").unwrap();
+    // // Show the custom substituent with the placeholders for functional groups
+    // adams_custom_substituent.visualize("adams-custom-substituent.png").unwrap();
 
-    let isobutyl_formate = OrganicMolecule::parse_smiles("O=COCC(C)C").unwrap();
-    println!("{:#?}", isobutyl_formate);
-    isobutyl_formate.visualize("isobutyl_formate.png").unwrap();
-    // println!("IUPAC name: {}", iupac_name(&molecule));
+    // Visualize the molecule
+
+
+    let ethyl_pryidine_3_carboxylate = OrganicMolecule::parse_smiles("C(C)OC(=O)C=1C=NC=CC1").unwrap();
+
+    // Visualize the molecule
+    ethyl_pryidine_3_carboxylate.visualize("ethyl-pyridine-3-carboxylate.png").unwrap();
+
+    // Determine the IUPAC name of the molecule
+    let iupac_name = ethyl_pryidine_3_carboxylate.to_iupac().unwrap();
+    println!("IUPAC name: {}", iupac_name); 
+
+    // Determine the molecular formula of the molecule
+    println!("{}", OrganicMolecule::parse_smiles("CCOC(=O)CC(=O)OCC").unwrap().to_iupac().unwrap());
 }

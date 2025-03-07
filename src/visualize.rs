@@ -6,6 +6,7 @@ use std::io::Write;
 use std::fmt::Write as FmtWrite;
 use petgraph::prelude::EdgeRef;
 use super::*;
+use tracing::*;
 
 lazy_static::lazy_static! {
     static ref VISUALIZE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -51,7 +52,7 @@ pub fn visualize_graph(
     file.write_all(dot_string.as_bytes())
         .map_err(|e| format!("Failed to write to DOT file: {}", e))?;
 
-    println!("DOT file saved to {}", output_dot);
+    info!("DOT file saved to {}", output_dot);
 
     // If an image output path is provided, render the DOT to an image using Graphviz
     if let Some(image_path) = output_image {
@@ -69,7 +70,7 @@ pub fn visualize_graph(
             ));
         }
 
-        println!("Image rendered to {}", image_path);
+        info!("Image rendered to {}", image_path);
     }
     drop(lock);
     Ok(())
