@@ -1,4 +1,3 @@
-
 // // parse.rs
 
 // use nom::{
@@ -29,7 +28,7 @@
 //     ("undec", 11),   // example
 //     ("dodec", 12),   // example
 //     ("icos", 20),    // example
-//     // etc. 
+//     // etc.
 // ];
 
 // /// Some ring indicators that might appear at the start of a parent name, e.g. "cyclo".
@@ -41,8 +40,8 @@
 //     // ...
 // ];
 
-// /// A minimal set of suffixes for functional groups. 
-// /// In reality, you might parse them with more advanced grammar 
+// /// A minimal set of suffixes for functional groups.
+// /// In reality, you might parse them with more advanced grammar
 // /// (e.g. "carboxylic acid", "carbaldehyde", etc.).
 // static FUNCTIONAL_GROUP_SUFFIXES: &[&str] = &[
 //     "oic acid",
@@ -75,7 +74,6 @@
 //     // etc.
 // ];
 
-
 // // -----------------------------------------------------------------------
 // // Utilities / Basic Parsers
 // // -----------------------------------------------------------------------
@@ -107,9 +105,9 @@
 //     Ok((input, false))
 // }
 
-// /// Parse a chain length prefix by scanning the front of `input` 
-// /// for any known CHAIN_LENGTH_PREFIXES. 
-// /// If found, accumulate the chain length. 
+// /// Parse a chain length prefix by scanning the front of `input`
+// /// for any known CHAIN_LENGTH_PREFIXES.
+// /// If found, accumulate the chain length.
 // /// You can do repeated matches to handle "pentadec" => 5 + 10 = 15, etc.
 // /// This is the general approach to “composing” numeric prefixes.
 // fn parse_chain_length_prefix(input: &str) -> IResult<&str, usize> {
@@ -133,7 +131,7 @@
 //     }
 
 //     if total_length == 0 {
-//         // We didn't match any prefix. 
+//         // We didn't match any prefix.
 //         // Return success with 0 => means "didn't parse any chain length prefix," leftover is the same.
 //         Ok((leftover, 0))
 //     } else {
@@ -154,9 +152,9 @@
 //     ))(input)
 // }
 
-// /// The main "base name" parser that tries to interpret a ring indicator, 
-// /// a chain-length prefix, and an optional saturation chunk. 
-// /// This does *not* parse functional group suffixes. 
+// /// The main "base name" parser that tries to interpret a ring indicator,
+// /// a chain-length prefix, and an optional saturation chunk.
+// /// This does *not* parse functional group suffixes.
 // /// Returns `( leftover, is_ring, chain_length, saturation )`.
 // fn parse_general_parent_base(input: &str) -> IResult<&str, (bool, usize, String)> {
 //     let (input, is_ring) = parse_ring_indicator(input)?;
@@ -164,7 +162,7 @@
 //     // parse the numeric prefix (like "meth" => 1, "undec" => 11, etc.)
 //     let (input, chain_length) = parse_chain_length_prefix(input)?;
 
-//     // parse saturation chunk: "an", "en", or "yn". 
+//     // parse saturation chunk: "an", "en", or "yn".
 //     // If we fail, we'll just assume "an" by default (full saturation).
 //     let (input, satur_opt) = opt(parse_saturation_chunk)(input)?;
 //     let saturation = satur_opt.unwrap_or("an").to_string();
@@ -175,9 +173,8 @@
 //     Ok((input, (is_ring, chain_length, saturation)))
 // }
 
-
-// /// We'll attempt to find which suffix from FUNCTIONAL_SUFFIX_PATTERNS best matches 
-// /// the start of leftover. 
+// /// We'll attempt to find which suffix from FUNCTIONAL_SUFFIX_PATTERNS best matches
+// /// the start of leftover.
 // /// If none match, we return None. If one matches, we map it to a FunctionalGroup variant.
 // fn parse_functional_suffix(input: &str, default_position: usize) -> IResult<&str, Option<FunctionalGroup>> {
 //     // parse an optional locant first
@@ -218,7 +215,6 @@
 // // Substituent Parsing
 // // -----------------------------------------------------------------------
 
-
 // /// A helper to parse an integer list separated by commas. E.g. "2,3,4"
 // fn parse_locant_list(input: &str) -> IResult<&str, Vec<usize>> {
 //     separated_list0(
@@ -236,12 +232,12 @@
 //     let (input, (is_ring, chain_len, satur)) = parse_general_parent_base(input)?;
 
 //     // 3) parse functional group suffix
-//     let (input, main_group) = parse_functional_suffix(input, 1)?; 
+//     let (input, main_group) = parse_functional_suffix(input, 1)?;
 //     // position defaults to 1 unless a locant is found.
 
-//     // 4) Build the structure: ring or chain. 
-//     // For is_ring, we might do a naive ring of `chain_len` carbons, 
-//     // single bonds if satur=="an", partial double if satur=="en"? 
+//     // 4) Build the structure: ring or chain.
+//     // For is_ring, we might do a naive ring of `chain_len` carbons,
+//     // single bonds if satur=="an", partial double if satur=="en"?
 //     // This is a simplistic approach.
 
 //     if is_ring {
@@ -265,7 +261,7 @@
 //         Ok((
 //             input,
 //             ParentStructure::Chain {
-//                 chain_length: if chain_len == 0 { 1 } else { chain_len }, 
+//                 chain_length: if chain_len == 0 { 1 } else { chain_len },
 //                 main_group,
 //                 substituents: subs,
 //                 stereocenters: vec![],
@@ -361,12 +357,12 @@
 //         // Nitro
 //         map(tag("nitro"),  |_| FunctionalGroup::nitro(0)),
 
-//         // Basic morphological parse of alkyl: parseChainPrefix + "yl" 
+//         // Basic morphological parse of alkyl: parseChainPrefix + "yl"
 //         // For full generality, see prior morphological approach
 //         parse_alkyl_substituent,
 
-//         // "phenyl", "sulfanyl", "cyano", "alkoxy", etc. 
-//         // If you want to parse them with a morphological approach, define a separate function. 
+//         // "phenyl", "sulfanyl", "cyano", "alkoxy", etc.
+//         // If you want to parse them with a morphological approach, define a separate function.
 //         map(tag("phenyl"),   |_| FunctionalGroup::phenyl(0)),
 //         map(tag("sulfanyl"), |_| FunctionalGroup::sulfanyl(0)),
 //         map(tag("cyano"),    |_| FunctionalGroup::cyano(0)),
@@ -376,7 +372,7 @@
 //     ))(input)
 // }
 
-// /// A simple morphological approach for alkyl substituents: 
+// /// A simple morphological approach for alkyl substituents:
 // /// E.g. "methyl" => "meth" + "yl" => chain length=1
 // ///      "ethyl" => "eth" + "yl" => chain length=2
 // fn parse_alkyl_substituent(input: &str) -> IResult<&str, FunctionalGroup> {
@@ -389,8 +385,8 @@
 //     ))(input)?;
 
 //     // We can store just the name or the length. For demonstration, let's store the name as e.g. "alkyl..."
-//     // Or simply store "methyl" if chain_len=1, "ethyl" if chain_len=2, etc. 
-//     // Real code might do a table lookup in reverse or just keep the chain_len in a field. 
+//     // Or simply store "methyl" if chain_len=1, "ethyl" if chain_len=2, etc.
+//     // Real code might do a table lookup in reverse or just keep the chain_len in a field.
 //     let name = match chain_len {
 //         1 => "methyl",
 //         2 => "ethyl",

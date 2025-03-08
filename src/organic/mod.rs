@@ -1,11 +1,18 @@
-use std::{collections::VecDeque, fmt::{Debug, Formatter, Result as FmtResult}, ops::RangeBounds};
+use std::{
+    collections::VecDeque,
+    fmt::{Debug, Formatter, Result as FmtResult},
+    ops::RangeBounds,
+};
 
-use petgraph::graph::Node;
-use anyhow::{Result, Context, anyhow, bail};
 use super::*;
+use anyhow::{anyhow, bail, Context, Result};
+use petgraph::graph::Node;
 use tracing::*;
 
-fn remove_subdivision<N, E>(graph: &mut UnGraph<N, E>, node: NodeIndex) where E: PartialEq + Clone {
+fn remove_subdivision<N, E>(graph: &mut UnGraph<N, E>, node: NodeIndex)
+where
+    E: PartialEq + Clone,
+{
     // Get neighbors
     let neighbors: Vec<NodeIndex> = graph.neighbors(node).collect();
 
@@ -58,14 +65,16 @@ impl Substituent {
     pub fn visualize_raw(&self, filename: &str) -> Result<()> {
         let mut graph = self.to_raw_graph().clone();
         graph.hydrogenate();
-        visualize_graph(&graph, "tmp.dot", Some(filename)).map_err(|e| anyhow!("Failed to visualize: {}", e))?;
+        visualize_graph(&graph, "tmp.dot", Some(filename))
+            .map_err(|e| anyhow!("Failed to visualize: {}", e))?;
         Ok(())
     }
 
     pub fn visualize(&self, filename: &str) -> Result<()> {
         let mut graph = self.to_molecule_graph();
         graph.hydrogenate();
-        visualize_graph(&graph, "tmp.dot", Some(filename)).map_err(|e| anyhow!("Failed to visualize: {}", e))?;
+        visualize_graph(&graph, "tmp.dot", Some(filename))
+            .map_err(|e| anyhow!("Failed to visualize: {}", e))?;
         Ok(())
     }
     /// Parse a SMILES string into a substituent.
@@ -107,8 +116,11 @@ impl Substituent {
                 }
                 // End a branch: pop a saved node.
                 ')' => {
-                    current_node = Some(branch_stack.pop()
-                        .ok_or_else(|| anyhow!("Unmatched ')' in SMILES"))?);
+                    current_node = Some(
+                        branch_stack
+                            .pop()
+                            .ok_or_else(|| anyhow!("Unmatched ')' in SMILES"))?,
+                    );
                 }
                 // Explicit bond symbols.
                 '-' | '=' | '#' | ':' => {
@@ -128,14 +140,18 @@ impl Substituent {
                             let bond = pending_bond.take().unwrap_or(Bond::Single);
                             graph.add_edge(stored, curr, bond);
                         } else {
-                            return Err(anyhow!("Ring closure digit encountered with no current atom"));
+                            return Err(anyhow!(
+                                "Ring closure digit encountered with no current atom"
+                            ));
                         }
                     } else {
                         // First occurrence: store the current atom for later connection.
                         if let Some(curr) = current_node {
                             ring_closures.insert(d, curr);
                         } else {
-                            return Err(anyhow!("Ring closure digit encountered with no current atom"));
+                            return Err(anyhow!(
+                                "Ring closure digit encountered with no current atom"
+                            ));
                         }
                     }
                 }
@@ -169,14 +185,14 @@ impl Substituent {
                         }
 
                         let element = match symbol.as_str() {
-                            "C"  => Element::C,
-                            "O"  => Element::O,
-                            "N"  => Element::N,
+                            "C" => Element::C,
+                            "O" => Element::O,
+                            "N" => Element::N,
                             "Cl" => Element::Cl,
                             "Br" => Element::Br,
-                            "c"  => Element::C.as_aromatic(),
-                            "o"  => Element::O.as_aromatic(),
-                            "n"  => Element::N.as_aromatic(),
+                            "c" => Element::C.as_aromatic(),
+                            "o" => Element::O.as_aromatic(),
+                            "n" => Element::N.as_aromatic(),
                             // Extend here for additional elements as needed.
                             _ => return Err(anyhow!("Unknown element symbol: {}", symbol)),
                         };
@@ -199,7 +215,10 @@ impl Substituent {
             return Err(anyhow!("Unmatched '(' found in SMILES"));
         }
         if !ring_closures.is_empty() {
-            return Err(anyhow!("Unclosed ring closures in SMILES: {:?}", ring_closures.keys()));
+            return Err(anyhow!(
+                "Unclosed ring closures in SMILES: {:?}",
+                ring_closures.keys()
+            ));
         }
 
         Ok(Substituent(graph))
@@ -216,20 +235,26 @@ impl Substituent {
                     continue;
                 }
                 remove_subdivision(&mut self.0, r_group);
-                break
+                break;
             }
         }
     }
 
     /// Does this have any R groups that we need to remove?
     fn has_connected_r_groups(&self) -> bool {
-        self.find_r_groups().iter().any(|&r_group| self.0.neighbors(r_group).count() > 1)
+        self.find_r_groups()
+            .iter()
+            .any(|&r_group| self.0.neighbors(r_group).count() > 1)
     }
 
     /// Find all the R groups in the substituent
     fn find_r_groups(&self) -> Vec<NodeIndex> {
         // Find all the node indices that are R groups
-        let mut node_indices: Vec<NodeIndex> = self.0.node_indices().filter(|&node| self.0[node].is_r_group()).collect();
+        let mut node_indices: Vec<NodeIndex> = self
+            .0
+            .node_indices()
+            .filter(|&node| self.0[node].is_r_group())
+            .collect();
 
         // Sort them by the R group number
         node_indices.sort_by_key(|&node| match self.0[node].kind {
@@ -247,7 +272,11 @@ impl Substituent {
 
     fn duplicate_r_group(&mut self, r_group: NodeIndex) -> NodeIndex {
         // Find the element the R group is connected to
-        let element = self.0.neighbors(r_group).find(|&node| !self.0[node].is_r_group()).unwrap();
+        let element = self
+            .0
+            .neighbors(r_group)
+            .find(|&node| !self.0[node].is_r_group())
+            .unwrap();
         let new_r_group = self.0.add_node(Element::r_group(self.count_r_groups()));
         self.0.add_edge(element, new_r_group, Bond::Single);
         new_r_group
@@ -266,9 +295,9 @@ impl Substituent {
         let new_atom = self.0.add_node(atom);
         self.0.add_edge(at, new_atom, Bond::Single);
     }
-    
+
     /// Connect another substituent to this one.
-    /// 
+    ///
     /// This will connext the next lowest R group in this substituent to the next lowest R group in the other substituent.
     fn connect(&mut self, other: &Substituent) -> Result<()> {
         if self.count_r_groups() > 1 && other.count_r_groups() > 1 {
@@ -278,13 +307,19 @@ impl Substituent {
         // Find the R group in the other substituent
         let my_r_group = self.find_lowest_r_group().context("No R groups found")?;
         let other_r_group = other.find_lowest_r_group().context("No R groups found")?;
-        super::connect(&mut self.0, &other.0, my_r_group, other_r_group, Bond::Single);
+        super::connect(
+            &mut self.0,
+            &other.0,
+            my_r_group,
+            other_r_group,
+            Bond::Single,
+        );
         self.remove_connected_r_groups();
         Ok(())
     }
 
     /// Connect another substituent to this one at a specific atom.
-    /// 
+    ///
     /// This uses the R group in the other substituent and connects it to the specified atom in this substituent.
     fn connect_at(&mut self, other: &Substituent, my_atom: NodeIndex) -> Result<()> {
         let other_r_group = other.find_lowest_r_group().context("No R groups found")?;
@@ -294,8 +329,14 @@ impl Substituent {
     }
 
     pub fn then_connect(mut self, other: Substituent) -> Result<Self> {
-        assert!(self.has_r_groups(), "No R groups found in the first substituent");
-        assert!(other.has_r_groups(), "No R groups found in the second substituent");
+        assert!(
+            self.has_r_groups(),
+            "No R groups found in the first substituent"
+        );
+        assert!(
+            other.has_r_groups(),
+            "No R groups found in the second substituent"
+        );
 
         self.connect(&other)?;
         Ok(self)
@@ -334,7 +375,7 @@ impl Substituent {
 
         longest_chain
     }
-    
+
     /// Is this a linear chain?
     pub fn is_chain(&self) -> bool {
         if self.is_cyclic() {
@@ -380,7 +421,6 @@ impl Substituent {
     pub fn is_cyclic(&self) -> bool {
         petgraph::algo::is_cyclic_undirected(&self.0)
     }
-
 
     /*
     /// Create a new substituent with N carbons in a row all connected by single bonds.
@@ -440,7 +480,12 @@ impl Substituent {
         Self::carbon_chain_group_helper(n, vec![Bond::Triple; n - 1], r_group_positions, false)
     }
 
-    fn carbon_chain_group_helper(n: usize, bonds: impl IntoIterator<Item=Bond>, r_group_positions: impl IntoIterator<Item = usize>, cyclic: bool) -> Self {
+    fn carbon_chain_group_helper(
+        n: usize,
+        bonds: impl IntoIterator<Item = Bond>,
+        r_group_positions: impl IntoIterator<Item = usize>,
+        cyclic: bool,
+    ) -> Self {
         if cyclic && n < 3 {
             panic!("Cyclic alkyl groups must have at least 3 carbons");
         }
@@ -455,19 +500,22 @@ impl Substituent {
 
         for i in 1..n {
             let next = graph.add_node(Element::C);
-            graph.add_edge(prev, next, bonds[i-1]);
+            graph.add_edge(prev, next, bonds[i - 1]);
             nodes.push(next);
 
             prev = next;
         }
 
         if cyclic {
-            graph.add_edge(prev, nodes[0], bonds[n-1]);
+            graph.add_edge(prev, nodes[0], bonds[n - 1]);
         }
 
         for pos in r_group_positions {
             if pos > n {
-                panic!("R group position {} is greater than the number of carbons in the chain", pos);
+                panic!(
+                    "R group position {} is greater than the number of carbons in the chain",
+                    pos
+                );
             }
             let node = nodes[pos - 1];
             let r_group = graph.add_node(Element::r_group(count));
@@ -564,14 +612,17 @@ impl Substituent {
         Substituent(graph)
     }
 
-    pub fn cyclic_alkyl_group(n: usize, r_group_positions: impl IntoIterator<Item = usize>) -> Self {
+    pub fn cyclic_alkyl_group(
+        n: usize,
+        r_group_positions: impl IntoIterator<Item = usize>,
+    ) -> Self {
         Self::carbon_chain_group_helper(n, vec![Bond::Single; n], r_group_positions, true)
     }
 
     pub fn cyclic_alkane(n: usize) -> Self {
         Self::carbon_chain_group_helper(n, vec![Bond::Single; n], vec![], true)
     }
-    
+
     pub fn methane() -> Self {
         Self::alkane(1)
     }
@@ -626,19 +677,24 @@ impl Substituent {
 
     pub fn isobutyl() -> Self {
         Substituent::alkyl_group(3, vec![2])
-            .then_connect(Substituent::alkyl_group(1, vec![1, 1])).unwrap()
+            .then_connect(Substituent::alkyl_group(1, vec![1, 1]))
+            .unwrap()
     }
 
     pub fn secbutyl() -> Self {
         Substituent::alkyl_group(3, vec![1, 2])
-            .then_connect(Substituent::methyl()).unwrap()
+            .then_connect(Substituent::methyl())
+            .unwrap()
     }
 
     pub fn tertbutyl() -> Self {
         Substituent::alkyl_group(1, vec![1, 1, 1, 1])
-            .then_connect(Substituent::methyl()).unwrap()
-            .then_connect(Substituent::methyl()).unwrap()
-            .then_connect(Substituent::methyl()).unwrap()
+            .then_connect(Substituent::methyl())
+            .unwrap()
+            .then_connect(Substituent::methyl())
+            .unwrap()
+            .then_connect(Substituent::methyl())
+            .unwrap()
     }
 
     pub fn halide(elem: impl Into<ElementType>) -> Self {
@@ -680,7 +736,6 @@ impl Debug for Substituent {
         write!(f, "{}", molecule_to_smiles(&self.0))
     }
 }
-
 
 /// --- Helper Functions ---
 ///
@@ -843,7 +898,8 @@ fn find_subgraph_isomorphism(
             for edge in pattern.edges(p_node) {
                 let p_nbr = edge.target();
                 if let Some(&mapped) = mapping.get(&p_nbr) {
-                    let found = graph.edges(g_node)
+                    let found = graph
+                        .edges(g_node)
                         .any(|e| e.target() == mapped && *e.weight() == *edge.weight());
                     if !found {
                         valid = false;
@@ -889,12 +945,14 @@ fn disconnect_subgraph_by_pattern(
     let mapping = find_subgraph_isomorphism(graph, pattern)
         .ok_or_else(|| anyhow!("No matching subgraph found for the given pattern"))?;
     let matched_set: HashSet<NodeIndex> = mapping.values().copied().collect();
-    let inverted_mapping: HashMap<NodeIndex, NodeIndex> = mapping.into_iter().map(|(k, v)| (v, k)).collect();
-    
+    let inverted_mapping: HashMap<NodeIndex, NodeIndex> =
+        mapping.into_iter().map(|(k, v)| (v, k)).collect();
+
     // Clone the graph so we can modify it.
     let mut g = graph.clone();
     // Remove all edges that connect a matched node to a non‐matched node.
-    let edges_to_remove: Vec<EdgeIndex> = g.edge_references()
+    let edges_to_remove: Vec<EdgeIndex> = g
+        .edge_references()
         .filter(|e| {
             let src = e.source();
             let tgt = e.target();
@@ -904,7 +962,8 @@ fn disconnect_subgraph_by_pattern(
         .map(|e| e.id())
         .collect();
 
-    let cut_nodes: HashSet<NodeIndex> = edges_to_remove.iter()
+    let cut_nodes: HashSet<NodeIndex> = edges_to_remove
+        .iter()
         .flat_map(|&edge| {
             let (src, tgt) = g.edge_endpoints(edge).unwrap();
             vec![src, tgt]
@@ -913,7 +972,6 @@ fn disconnect_subgraph_by_pattern(
         .collect();
 
     g.retain_edges(|_, edge| !edges_to_remove.contains(&edge));
-
 
     // (We leave the matched nodes in the graph here.)
     // Return the connected components.
@@ -964,8 +1022,9 @@ fn disconnect_subgraph_by_pattern(
         .find(|comp| comp.iter().any(|n| matched_set.contains(n)))
         .map(|comp| Substituent(subgraph_from_component(&g, &comp)))
         .unwrap();
-    
-    let subs: Vec<Substituent> = comps.into_iter()
+
+    let subs: Vec<Substituent> = comps
+        .into_iter()
         .filter(|comp| {
             // Confirm that the component didn't contain any of the matched nodes
             comp.iter().all(|node| !matched_set.contains(node))
@@ -976,11 +1035,10 @@ fn disconnect_subgraph_by_pattern(
     Ok((subs, pattern_sub))
 }
 
-
 #[derive(Clone)]
 pub enum OrganicMolecule {
     Substituent(Substituent),
-    Compound(UnGraph<Self, usize>)
+    Compound(UnGraph<Self, usize>),
 }
 
 impl OrganicMolecule {
@@ -1008,7 +1066,10 @@ impl OrganicMolecule {
         if let Some((alkyl1_graph, alkyl2_graph)) = Self::match_ether(&raw_graph) {
             let alkyl1 = OrganicMolecule::from(Substituent(alkyl1_graph));
             let alkyl2 = OrganicMolecule::from(Substituent(alkyl2_graph));
-            info!("Ether detected: alkyl1 = {:?}, alkyl2 = {:?}", alkyl1, alkyl2);
+            info!(
+                "Ether detected: alkyl1 = {:?}, alkyl2 = {:?}",
+                alkyl1, alkyl2
+            );
             return Ok(OrganicMolecule::ether(alkyl1, alkyl2));
         }
         info!("Matching carboxylic acid...");
@@ -1022,7 +1083,7 @@ impl OrganicMolecule {
         Ok(OrganicMolecule::from(substituent))
     }
 
-    pub fn bind(&self, sites: impl IntoIterator<Item=Self>) -> Result<Self> {
+    pub fn bind(&self, sites: impl IntoIterator<Item = Self>) -> Result<Self> {
         let sites = sites.into_iter().collect::<Vec<_>>();
         // Confirm we have enough sites to bind
         if self.count_r_groups() < sites.len() {
@@ -1110,7 +1171,8 @@ impl OrganicMolecule {
     /// splitting the graph along that bond, and the fragment not containing the carbon is treated
     /// as the target group (for example, H for formic acid).
     fn match_carboxylic_acid(graph: &MoleculeGraph) -> Option<MoleculeGraph> {
-        let (subs, _) = disconnect_subgraph_by_pattern(graph, &Substituent::carboxyl_group()).ok()?;
+        let (subs, _) =
+            disconnect_subgraph_by_pattern(graph, &Substituent::carboxyl_group()).ok()?;
         if subs.len() == 1 {
             let target = subs[0].0.clone();
             Some(target)
@@ -1128,7 +1190,14 @@ impl OrganicMolecule {
         match self {
             OrganicMolecule::Substituent(substituent) => substituent.count_r_groups(),
             OrganicMolecule::Compound(graph) => {
-                let total_r_groups = graph.node_indices().map(|idx| graph[idx].count_r_groups().saturating_sub(graph.neighbors(idx).count())).sum::<usize>();
+                let total_r_groups = graph
+                    .node_indices()
+                    .map(|idx| {
+                        graph[idx]
+                            .count_r_groups()
+                            .saturating_sub(graph.neighbors(idx).count())
+                    })
+                    .sum::<usize>();
                 // total_r_groups - graph.edge_count()
                 total_r_groups
             }
@@ -1138,7 +1207,8 @@ impl OrganicMolecule {
     pub fn visualize(&self, filename: &str) -> Result<()> {
         let mut graph = self.to_molecule_graph();
         graph.hydrogenate();
-        visualize_graph(&graph, "tmp.dot", Some(filename)).map_err(|e| anyhow!("Failed to visualize: {}", e))?;
+        visualize_graph(&graph, "tmp.dot", Some(filename))
+            .map_err(|e| anyhow!("Failed to visualize: {}", e))?;
         Ok(())
     }
 
@@ -1160,12 +1230,14 @@ impl OrganicMolecule {
             graph.add_edge(main_chain_node, branch_node, pos);
         }
 
-        OrganicMolecule::Compound(graph).check_r_groups(0..=1, "Resulting alkane must have 0 or 1 R groups")
+        OrganicMolecule::Compound(graph)
+            .check_r_groups(0..=1, "Resulting alkane must have 0 or 1 R groups")
     }
 
     pub fn alkyl_group(n: usize, r_group_positions: impl IntoIterator<Item = usize>) -> Self {
         let alkyl = Substituent::alkyl_group(n, r_group_positions);
-        OrganicMolecule::Substituent(alkyl).check_r_groups(0..=1, "Resulting alkyl group must have 0 or 1 R groups")
+        OrganicMolecule::Substituent(alkyl)
+            .check_r_groups(0..=1, "Resulting alkyl group must have 0 or 1 R groups")
     }
 
     pub fn methane() -> Self {
@@ -1215,17 +1287,18 @@ impl OrganicMolecule {
     pub fn hexyl() -> Self {
         Self::alkyl_group(6, vec![1])
     }
-    
+
     pub fn carboxylic_acid(target: impl Into<Self>) -> Self {
         let mut graph = UnGraph::new_undirected();
-        
+
         let target = target.into();
         let carboxylic_acid = Substituent::carboxyl_group().into();
         let carboxylic_acid_node = graph.add_node(carboxylic_acid);
         let target_node = graph.add_node(target);
         graph.add_edge(carboxylic_acid_node, target_node, 0);
 
-        OrganicMolecule::Compound(graph).check_r_groups(0..=1, "Resulting carboxylic acid must have 0 or 1 R groups")
+        OrganicMolecule::Compound(graph)
+            .check_r_groups(0..=1, "Resulting carboxylic acid must have 0 or 1 R groups")
     }
 
     pub fn cyclic_alkane(n: usize, branches: impl IntoIterator<Item = (usize, Self)>) -> Self {
@@ -1246,14 +1319,19 @@ impl OrganicMolecule {
             graph.add_edge(main_chain_node, branch_node, pos);
         }
 
-        OrganicMolecule::Compound(graph).check_r_groups(0..=1, "Resulting cyclic alkane must have 0 or 1 R groups")
+        OrganicMolecule::Compound(graph)
+            .check_r_groups(0..=1, "Resulting cyclic alkane must have 0 or 1 R groups")
     }
 
     fn add_r_group(&mut self) {
         if let OrganicMolecule::Substituent(sub) = self {
             warn!("Adding R group to substituent with no R groups: {:?}", sub);
             // Connect an R group to the first carbon
-            let carbon = sub.0.node_indices().find(|&node| sub.0[node].is_carbon()).unwrap();
+            let carbon = sub
+                .0
+                .node_indices()
+                .find(|&node| sub.0[node].is_carbon())
+                .unwrap();
             let r_group = sub.0.add_node(Element::r_group(0));
             sub.0.add_edge(carbon, r_group, Bond::Single);
         } else {
@@ -1267,9 +1345,15 @@ impl OrganicMolecule {
         }
     }
 
-    pub fn cyclic_alkyl_group(n: usize, r_group_positions: impl IntoIterator<Item = usize>) -> Self {
+    pub fn cyclic_alkyl_group(
+        n: usize,
+        r_group_positions: impl IntoIterator<Item = usize>,
+    ) -> Self {
         let alkyl = Substituent::cyclic_alkyl_group(n, r_group_positions);
-        OrganicMolecule::Substituent(alkyl).check_r_groups(0..=1, "Resulting cyclic alkyl group must have 0 or 1 R groups")
+        OrganicMolecule::Substituent(alkyl).check_r_groups(
+            0..=1,
+            "Resulting cyclic alkyl group must have 0 or 1 R groups",
+        )
     }
 
     pub fn phenyl() -> Self {
@@ -1295,7 +1379,8 @@ impl OrganicMolecule {
         graph.add_edge(ether, alkyl1, 0);
         graph.add_edge(ether, alkyl2, 1);
 
-        OrganicMolecule::Compound(graph).check_r_groups(0..=2, "Resulting ether must have 0, 1, or 2 R groups")
+        OrganicMolecule::Compound(graph)
+            .check_r_groups(0..=2, "Resulting ether must have 0, 1, or 2 R groups")
     }
 
     pub fn ester(acyl: impl Into<Self>, alkyl: impl Into<Self>) -> Self {
@@ -1309,7 +1394,8 @@ impl OrganicMolecule {
         graph.add_edge(ester, acyl, 0);
         graph.add_edge(ester, alkyl, 1);
 
-        OrganicMolecule::Compound(graph).check_r_groups(0..=2, "Resulting ether must have 0, 1, or 2 R groups")
+        OrganicMolecule::Compound(graph)
+            .check_r_groups(0..=2, "Resulting ether must have 0, 1, or 2 R groups")
     }
 
     pub fn alcohol(alkyl: impl Into<Self>) -> Self {
@@ -1322,7 +1408,12 @@ impl OrganicMolecule {
     fn check_r_groups(self, expected: impl RangeBounds<usize> + Debug, msg: impl ToString) -> Self {
         let r_groups = self.count_r_groups();
         if !expected.contains(&r_groups) {
-            panic!("{}: Expected {:?} R groups, found {}", msg.to_string(), expected, r_groups);
+            panic!(
+                "{}: Expected {:?} R groups, found {}",
+                msg.to_string(),
+                expected,
+                r_groups
+            );
         }
         self
     }
@@ -1331,7 +1422,7 @@ impl OrganicMolecule {
         if let OrganicMolecule::Compound(ref mut graph) = self {
             let mut s1_orgo = graph[s1_node_idx].clone();
             let mut s2_orgo = graph[s2_node_idx].clone();
-            
+
             if s1_orgo.count_r_groups() < 1 {
                 s1_orgo.add_r_group();
             }
@@ -1347,7 +1438,7 @@ impl OrganicMolecule {
 
             // Store the new substituent back in the graph
             graph[s1_node_idx] = s1.into();
-    
+
             // Remove the other substituent
             graph.remove_node(s2_node_idx);
         }
@@ -1356,37 +1447,35 @@ impl OrganicMolecule {
     fn as_substituent(&self) -> Substituent {
         match self {
             OrganicMolecule::Substituent(substituent) => substituent.clone(),
-            Self::Compound(_) => {
-                self.clone().merge_all_substituents()
-            }
+            Self::Compound(_) => self.clone().merge_all_substituents(),
         }
     }
 
     fn is_compound(&self) -> bool {
         match self {
             OrganicMolecule::Compound(_) => true,
-            _ => false
+            _ => false,
         }
     }
 
     fn substituent_count(&self) -> usize {
         match self {
             OrganicMolecule::Compound(graph) => graph.node_count(),
-            _ => 1
+            _ => 1,
         }
     }
 
     fn ref_graph(&self) -> &UnGraph<Self, usize> {
         match self {
             OrganicMolecule::Compound(graph) => graph,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
     fn mut_graph(&mut self) -> &mut UnGraph<Self, usize> {
         match self {
             OrganicMolecule::Compound(graph) => graph,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -1396,10 +1485,10 @@ impl OrganicMolecule {
                 // Sort the edges by weight
                 let mut edges: Vec<_> = self.ref_graph().edge_indices().collect();
                 edges.sort_by_key(|&edge| self.ref_graph()[edge]);
-                
+
                 // Get the two substituents to connect
                 let (s1_node_idx, s2_node_idx) = self.ref_graph().edge_endpoints(edges[0]).unwrap();
-                
+
                 // Merge the two substituents
                 self.merge_substituents(s1_node_idx, s2_node_idx);
             }
@@ -1417,7 +1506,6 @@ impl OrganicMolecule {
         Ok(iupac_name(&self.to_molecule_graph()))
     }
 }
-
 
 impl Debug for OrganicMolecule {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
@@ -1458,7 +1546,12 @@ mod tests {
         let parsed = OrganicMolecule::parse_smiles(&smiles).unwrap();
         parsed.visualize("parsed.png").unwrap();
         // Check that the parsed molecule is the same as the original
-        assert!(molecule.is_same_as(&parsed), "Molecule mismatch: {:?} != {:?}", molecule, parsed);
+        assert!(
+            molecule.is_same_as(&parsed),
+            "Molecule mismatch: {:?} != {:?}",
+            molecule,
+            parsed
+        );
     }
 
     #[test]
@@ -1513,35 +1606,40 @@ mod tests {
         println!("{:#?}", cyclohexane);
         cyclohexane.visualize("cyclohexane.png")?;
 
-
-        let methylcyclopropane = OrganicMolecule::cyclic_alkane(3,
-            vec![(1, OrganicMolecule::methyl())]);
+        let methylcyclopropane =
+            OrganicMolecule::cyclic_alkane(3, vec![(1, OrganicMolecule::methyl())]);
         println!("{:#?}", methylcyclopropane);
         methylcyclopropane.visualize("methylcyclopropane.png")?;
 
-        let _4ethyl_2methylhexane = OrganicMolecule::alkane(6, [
+        let _4ethyl_2methylhexane = OrganicMolecule::alkane(
+            6,
+            [
                 (2, OrganicMolecule::methyl()),
                 (4, OrganicMolecule::ethyl()),
-            ]);
+            ],
+        );
         println!("{:#?}", _4ethyl_2methylhexane);
         _4ethyl_2methylhexane.visualize("4ethyl-2methylhexane.png")?;
 
-        let _2_3_5trimethyl_4_propylheptane = OrganicMolecule::alkane(7, [
-            (4, OrganicMolecule::propyl()),
-            (2, OrganicMolecule::methyl()),
-            (3, OrganicMolecule::methyl()),
-            (5, OrganicMolecule::methyl()),
-        ]);
+        let _2_3_5trimethyl_4_propylheptane = OrganicMolecule::alkane(
+            7,
+            [
+                (4, OrganicMolecule::propyl()),
+                (2, OrganicMolecule::methyl()),
+                (3, OrganicMolecule::methyl()),
+                (5, OrganicMolecule::methyl()),
+            ],
+        );
         println!("{:#?}", _2_3_5trimethyl_4_propylheptane);
         _2_3_5trimethyl_4_propylheptane.visualize("2,3,5trimethyl-4propylheptane.png")?;
-    
+
         let formic_acid = OrganicMolecule::carboxylic_acid(Element::H);
         println!("{:#?}", formic_acid);
         formic_acid.visualize("formic_acid.png")?;
 
         let acetic_acid = OrganicMolecule::carboxylic_acid(OrganicMolecule::methyl());
         println!("{:#?}", acetic_acid);
-        
+
         Ok(())
     }
 
@@ -1555,7 +1653,7 @@ mod tests {
         let methylpentane = Substituent::alkyl_group(5, vec![3, 3])
             .then_connect(Substituent::alkyl_group(1, vec![1]))?
             .then_connect(Substituent::alkyl_group(1, vec![1]))?;
-    
+
         println!("{:#?}", methylpentane);
 
         methylpentane.visualize("3-methylpentane.png")?;

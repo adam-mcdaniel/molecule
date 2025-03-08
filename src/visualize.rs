@@ -1,11 +1,11 @@
 // src/parser.rs
 
-use crate::{Bond, Bond::*, Element, ElementType::*};
-use crate::MoleculeGraph;
-use std::io::Write;
-use std::fmt::Write as FmtWrite;
-use petgraph::prelude::EdgeRef;
 use super::*;
+use crate::MoleculeGraph;
+use crate::{Bond, Bond::*, Element, ElementType::*};
+use petgraph::prelude::EdgeRef;
+use std::fmt::Write as FmtWrite;
+use std::io::Write;
 use tracing::*;
 
 lazy_static::lazy_static! {
@@ -97,7 +97,7 @@ fn generate_dot(graph: &MoleculeGraph) -> String {
     for node in graph.node_indices() {
         let element = &graph[node];
         let node_color = element_to_color(&element.kind);
-        
+
         let diameter = element.diameter() / 2.0;
 
         writeln!(
@@ -131,18 +131,24 @@ fn generate_dot(graph: &MoleculeGraph) -> String {
         };
 
         let has_hydrogen = source_element.is_hydrogen() || target_element.is_hydrogen();
-        let len = if has_hydrogen {
-            0.75
-        } else {
-            1.75
-        };
+        let len = if has_hydrogen { 0.75 } else { 1.75 };
 
         for i in 0..count {
             writeln!(
                 dot_output,
                 "    {} -- {} [len={len}, weight={weight}, style={}, penwidth={}, {}];",
-                source.index(), target.index(), style, penwidth, extra,
-                weight = if i == 0 && !has_hydrogen { 3 } else if has_hydrogen { 1 } else { 0 } * 10,
+                source.index(),
+                target.index(),
+                style,
+                penwidth,
+                extra,
+                weight = if i == 0 && !has_hydrogen {
+                    3
+                } else if has_hydrogen {
+                    1
+                } else {
+                    0
+                } * 10,
             )
             .unwrap();
         }
@@ -224,7 +230,8 @@ mod tests {
 
         assert_eq!(molecule.node_count(), 3); // 2 Carbons, 1 Oxygen
 
-        visualize_graph(&molecule, "ethanol.dot", Some("ethanol.png")).expect("Failed to visualize graph");
+        visualize_graph(&molecule, "ethanol.dot", Some("ethanol.png"))
+            .expect("Failed to visualize graph");
     }
 
     #[test]
@@ -235,6 +242,11 @@ mod tests {
 
         assert_eq!(molecule.node_count(), 5); // 3 Carbons, 1 Oxygen, 1 Hydrogen
 
-        visualize_graph(&molecule, "methyl_ethanoate.dot", Some("methyl_ethanoate.png")).expect("Failed to visualize graph");
+        visualize_graph(
+            &molecule,
+            "methyl_ethanoate.dot",
+            Some("methyl_ethanoate.png"),
+        )
+        .expect("Failed to visualize graph");
     }
 }

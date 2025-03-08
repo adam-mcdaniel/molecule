@@ -1,17 +1,17 @@
+use anyhow::{Context, Result};
+use parse::SmilesError;
 use petgraph::dot::{Config, Dot};
 use petgraph::graph::EdgeReference;
-use petgraph::graph::{Graph, UnGraph, EdgeIndex};
 use petgraph::graph::NodeIndex;
+use petgraph::graph::{EdgeIndex, Graph, UnGraph};
+use petgraph::visit::EdgeRef;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::File;
 use std::io::Write;
-use petgraph::visit::EdgeRef;
-use std::collections::{HashSet, HashMap, BTreeMap};
-use std::fmt::{Display, Formatter, Result as FmtResult};
-use anyhow::{Context, Result};
 use thiserror::Error as ThisError;
-use parse::SmilesError;
-
+use tracing::*;
 
 #[derive(ThisError, Debug)]
 pub enum ParseError {
@@ -72,7 +72,7 @@ pub enum ElementType {
     Br,
     S,
     I,
-    RGroup(usize)
+    RGroup(usize),
 }
 
 impl ElementType {
@@ -98,7 +98,7 @@ impl ElementType {
             ElementType::RGroup(_) => return None,
         })
     }
-    
+
     pub fn diameter(&self) -> f64 {
         match self {
             ElementType::C => 1.54,
@@ -154,11 +154,15 @@ impl ElementType {
             ElementType::S => "S",
             ElementType::I => "I",
             ElementType::RGroup(count) => return "R".to_string() + "'".repeat(*count).as_str(),
-        }.to_string()
+        }
+        .to_string()
     }
 
     pub fn is_halogen(&self) -> bool {
-        matches!(self, ElementType::F | ElementType::Cl | ElementType::Br | ElementType::I)
+        matches!(
+            self,
+            ElementType::F | ElementType::Cl | ElementType::Br | ElementType::I
+        )
     }
 
     pub fn is_heteroatom(&self) -> bool {
@@ -273,7 +277,10 @@ impl Element {
             "R''" => Self::r_group(3),
             "R'''" => Self::r_group(4),
 
-            unknown => return Err(ParseError::UnknownElement(unknown.to_string())).context("While parsing SMILES string"),
+            unknown => {
+                return Err(ParseError::UnknownElement(unknown.to_string()))
+                    .context("While parsing SMILES string")
+            }
         })
     }
 
@@ -388,7 +395,13 @@ impl From<Element> for MoleculeGraph {
     }
 }
 
-pub(crate) fn connect(dst: &mut MoleculeGraph, src: &MoleculeGraph, dst_node: NodeIndex, src_node: NodeIndex, bond: Bond) {
+pub(crate) fn connect(
+    dst: &mut MoleculeGraph,
+    src: &MoleculeGraph,
+    dst_node: NodeIndex,
+    src_node: NodeIndex,
+    bond: Bond,
+) {
     // Take all the nodes and edges from the source graph
     let mut node_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
     for node in src.node_indices() {
@@ -418,11 +431,14 @@ fn hydrogenate(graph: &mut MoleculeGraph) {
             for edge in graph.edges(node) {
                 available_bonds -= edge.weight().order();
             }
-    
+
             if available_bonds < 0.0 {
-                panic!("Found element {} with negative available bonds in {graph:#?}", element.symbol());
+                warn!(
+                    "Found element {} with negative available bonds in {graph:#?}",
+                    element.symbol()
+                );
             }
-    
+
             for _ in 0..available_bonds.ceil() as usize {
                 let h_node = graph.add_node(Element::H);
                 graph.add_edge(node, h_node, Bond::Single);
@@ -452,7 +468,7 @@ pub fn formula_string(graph: &MoleculeGraph) -> String {
         let symbol = graph[node].symbol();
         *counts.entry(symbol).or_insert(0) += 1;
     }
-    
+
     let mut output = String::new();
     // Print Carbon first.
     if let Some(&c_count) = counts.get("C") {
@@ -480,14 +496,13 @@ pub fn formula_string(graph: &MoleculeGraph) -> String {
     output
 }
 
-
 /// A helper structure to record a ring closure edge.
 #[derive(Debug, Clone)]
 struct RingClosure {
-    opening: NodeIndex,  // the ancestor where the ring is opened
-    closing: NodeIndex,  // the descendant where the ring is closed
-    bond: Bond,          // the bond used for the closure
-    digit: usize,        // assigned ring closure digit
+    opening: NodeIndex, // the ancestor where the ring is opened
+    closing: NodeIndex, // the descendant where the ring is closed
+    bond: Bond,         // the bond used for the closure
+    digit: usize,       // assigned ring closure digit
 }
 
 /// First pass: Compute a spanning tree of the graph (via DFS) and record ring closures.
@@ -529,7 +544,11 @@ fn compute_spanning_tree_and_ring_closures(
                 // Found a back edge: current -> nbr, where nbr is an ancestor.
                 // Record it as a ring closure. We assign a digit later.
                 // Only record if the edge isn’t already recorded (using ordered key).
-                let key = if current < nbr { (current, nbr) } else { (nbr, current) };
+                let key = if current < nbr {
+                    (current, nbr)
+                } else {
+                    (nbr, current)
+                };
                 // Check if already recorded:
                 if !ring_closures.iter().any(|rc| {
                     let existing_key = if rc.opening < rc.closing {
@@ -542,7 +561,9 @@ fn compute_spanning_tree_and_ring_closures(
                     ring_closures.push(RingClosure {
                         opening: nbr,
                         closing: current,
-                        bond: *graph.edge_weight(graph.find_edge(current, nbr).unwrap()).unwrap(),
+                        bond: *graph
+                            .edge_weight(graph.find_edge(current, nbr).unwrap())
+                            .unwrap(),
                         digit: 0, // placeholder; will assign digits in a later pass
                     });
                 }
@@ -551,7 +572,14 @@ fn compute_spanning_tree_and_ring_closures(
         path.pop();
     }
 
-    dfs(graph, start, &mut parent, &mut ring_closures, &mut visited, &mut path);
+    dfs(
+        graph,
+        start,
+        &mut parent,
+        &mut ring_closures,
+        &mut visited,
+        &mut path,
+    );
     (parent, ring_closures)
 }
 /// Second pass: Generate SMILES from the spanning tree, inserting ring–closure markers
@@ -629,11 +657,7 @@ fn generate_smiles_from_tree(
         let num_children = child_list.map_or(0, |v| v.len());
         // Compute the total degree in the spanning tree for a non-root node.
         // For the root, we force branch notation for every child.
-        let force_branch = if is_root {
-            true
-        } else {
-            num_children > 1
-        };
+        let force_branch = if is_root { true } else { num_children > 1 };
 
         // Process children.
         if let Some(child_nodes) = child_list {
@@ -651,7 +675,9 @@ fn generate_smiles_from_tree(
                 // Only one child: inline the continuation.
                 let child = child_nodes[0];
                 branch_str.push_str(&bond_str(graph, current, child));
-                branch_str.push_str(&dfs_tree(graph, child, children, open_map, close_map, false));
+                branch_str.push_str(&dfs_tree(
+                    graph, child, children, open_map, close_map, false,
+                ));
             }
             s.push_str(&branch_str);
         }
@@ -669,7 +695,7 @@ fn bond_str(graph: &MoleculeGraph, a: NodeIndex, b: NodeIndex) -> String {
             Bond::Single => "".to_string(),
             Bond::Double => "=".to_string(),
             Bond::Triple => "#".to_string(),
-            Bond::Aromatic => ":".to_string()
+            Bond::Aromatic => ":".to_string(),
         }
     } else {
         "".to_string()
