@@ -285,6 +285,32 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_benzene() {
+        let smiles = "c1ccccc1"; // Cyclohexane
+        let molecule = parse_smiles(smiles).expect("Failed to parse SMILES");
+        // visualize_graph(&molecule, "cyclohexane.dot", Some("cyclohexane.png"))
+        //     .expect("Failed to visualize graph");
+        println!("Graph: {:#?}", molecule);
+        // assert_eq!(molecule.node_count(), 6); // 6 Carbons
+
+        // Check all atoms are carbon
+        for node in molecule.node_indices() {
+            assert_eq!(molecule[node], C);
+        }
+
+        // Check bonds
+        let edges: Vec<_> = molecule.edge_references().collect();
+        assert_eq!(edges.len(), 6); // C-C bonds forming a ring
+
+        // Each carbon should have two bonds (since it's a ring)
+        for node in molecule.node_indices() {
+            let degree = molecule.edges(node).count();
+            assert_eq!(degree, 2, "Node {} has degree {}", node.index(), degree);
+        }
+        // println!("Name: {}", iupac_name(&molecule));
+    }
+
+    #[test]
     fn test_ciprofloxacin() {
         let smiles = "C1CNCCN1c(c2)c(F)cc3c2N(C4CC4)C=C(C3=O)C(=O)O".to_string(); // Ciprofloxacin
 
