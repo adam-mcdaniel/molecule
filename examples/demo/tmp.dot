@@ -1,0 +1,14 @@
+graph Molecule {
+    layout=neato; overlap=prism;
+    multiedge=true;
+    0 [label="C", width=0.77, fontcolor=white, shape=circle, style=filled, fillcolor=black];
+    1 [label="O", width=0.76, fontcolor=white, shape=circle, style=filled, fillcolor=red];
+    2 [label="O", width=0.76, fontcolor=white, shape=circle, style=filled, fillcolor=red];
+    3 [label="H", width=0.6, fontcolor=white, shape=circle, style=filled, fillcolor=gray];
+    4 [label="H", width=0.6, fontcolor=white, shape=circle, style=filled, fillcolor=gray];
+    0 -- 1 [len=1.75, weight=30, style=solid, penwidth=2, ];
+    0 -- 2 [len=1.75, weight=30, style=solid, penwidth=2, ];
+    0 -- 2 [len=1.75, weight=0, style=solid, penwidth=2, ];
+    0 -- 3 [len=0.75, weight=10, style=solid, penwidth=2, ];
+    1 -- 4 [len=0.75, weight=10, style=solid, penwidth=2, ];
+}
