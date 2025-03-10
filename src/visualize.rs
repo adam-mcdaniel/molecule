@@ -190,6 +190,8 @@ fn element_to_color(element: &ElementType) -> &'static str {
         F => "plum3",
         S => "darkgoldenrod",
         I => "purple",
+        P => "darkorange",
+        As => "darkorchid",
         // Add other elements with distinct colors
         RGroup(_) => "orange",
     }

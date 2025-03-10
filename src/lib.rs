@@ -46,6 +46,18 @@ pub use naming::*;
 mod organic;
 pub use organic::*;
 
+mod memoize;
+pub use memoize::*;
+
+mod intern;
+pub use intern::*;
+
+mod sexpr;
+pub use sexpr::*;
+
+mod canon;
+pub use canon::*;
+
 pub fn init_logging(level: &str) {
     let _ = tracing_subscriber::fmt()
         .with_max_level(match level {
@@ -61,7 +73,7 @@ pub fn init_logging(level: &str) {
         .try_init();
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ElementType {
     C,
     H,
@@ -71,7 +83,9 @@ pub enum ElementType {
     Cl,
     Br,
     S,
+    P,
     I,
+    As,
     RGroup(usize),
 }
 
@@ -93,6 +107,8 @@ impl ElementType {
             ElementType::F => 1,
             ElementType::Cl => 1,
             ElementType::Br => 1,
+            ElementType::As => 3,
+            ElementType::P => 3,
             ElementType::S => 2,
             ElementType::I => 1,
             ElementType::RGroup(_) => return None,
@@ -108,6 +124,8 @@ impl ElementType {
             ElementType::F => 1.47,
             ElementType::Cl => 1.75,
             ElementType::Br => 1.85,
+            ElementType::As => 1.85,
+            ElementType::P => 1.8,
             ElementType::S => 1.8,
             ElementType::I => 1.98,
             ElementType::RGroup(_) => 1.54,
@@ -151,6 +169,8 @@ impl ElementType {
             ElementType::F => "F",
             ElementType::Cl => "Cl",
             ElementType::Br => "Br",
+            ElementType::As => "As",
+            ElementType::P => "P",
             ElementType::S => "S",
             ElementType::I => "I",
             ElementType::RGroup(count) => return "R".to_string() + "'".repeat(*count).as_str(),
@@ -176,7 +196,7 @@ impl From<Element> for ElementType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Element {
     pub kind: ElementType,
     pub aromatic: bool,
@@ -230,6 +250,17 @@ impl Element {
         aromatic: false,
     };
 
+    pub const P: Self = Self {
+        kind: ElementType::P,
+        aromatic: false,
+    };
+
+    #[allow(non_upper_case_globals)]
+    pub const As: Self = Self {
+        kind: ElementType::As,
+        aromatic: false,
+    };
+
     pub fn available_single_bonds(&self) -> Option<usize> {
         self.kind.available_single_bonds()
     }
@@ -265,6 +296,9 @@ impl Element {
             "Cl" => Self::Cl,
             "Br" => Self::Br,
             "S" => Self::S,
+            "As" => Self::As,
+            "P" => Self::P,
+            "I" => Self::I,
 
             "c" => Self::C.as_aromatic(),
             "o" => Self::O.as_aromatic(),
@@ -272,14 +306,15 @@ impl Element {
             "s" => Self::S.as_aromatic(),
             // Parse R groups
             // The number of apostrophes indicates the Nth R group
-            "R" => Self::r_group(1),
-            "R'" => Self::r_group(2),
-            "R''" => Self::r_group(3),
-            "R'''" => Self::r_group(4),
-
+            "R" => Self::r_group(0),
+            "R'" => Self::r_group(1),
+            "R''" => Self::r_group(2),
+            "R'''" => Self::r_group(3),
+            "R''''" => Self::r_group(4),
+            "R'''''" => Self::r_group(5),
             unknown => {
                 return Err(ParseError::UnknownElement(unknown.to_string()))
-                    .context("While parsing SMILES string")
+                    .context(format!("While parsing SMILES element {unknown}"))
             }
         })
     }
@@ -342,6 +377,18 @@ impl Element {
         self.kind.symbol()
     }
 
+    pub fn smiles_symbol(&self) -> String {
+        if self.aromatic {
+            self.symbol().to_lowercase()
+        } else {
+            self.symbol()
+        }
+    }
+
+    pub fn set_aromatic(&mut self, aromatic: bool) {
+        self.aromatic = aromatic;
+    }
+
     pub fn diameter(&self) -> f64 {
         self.kind.diameter()
     }
@@ -362,7 +409,7 @@ impl From<ElementType> for Element {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Bond {
     Single,
     Double,
@@ -434,7 +481,7 @@ fn hydrogenate(graph: &mut MoleculeGraph) {
 
             if available_bonds < 0.0 {
                 warn!(
-                    "Found element {} with negative available bonds in {graph:#?}",
+                    "Found element {} with negative available bonds in {graph:?}",
                     element.symbol()
                 );
             }
@@ -494,226 +541,4 @@ pub fn formula_string(graph: &MoleculeGraph) -> String {
         }
     }
     output
-}
-
-/// A helper structure to record a ring closure edge.
-#[derive(Debug, Clone)]
-struct RingClosure {
-    opening: NodeIndex, // the ancestor where the ring is opened
-    closing: NodeIndex, // the descendant where the ring is closed
-    bond: Bond,         // the bond used for the closure
-    digit: usize,       // assigned ring closure digit
-}
-
-/// First pass: Compute a spanning tree of the graph (via DFS) and record ring closures.
-/// Returns a mapping from each node (except the root) to its parent in the DFS tree,
-/// and a vector of RingClosure records for every back edge encountered.
-fn compute_spanning_tree_and_ring_closures(
-    graph: &MoleculeGraph,
-    start: NodeIndex,
-) -> (HashMap<NodeIndex, NodeIndex>, Vec<RingClosure>) {
-    let mut parent: HashMap<NodeIndex, NodeIndex> = HashMap::new();
-    let mut ring_closures: Vec<RingClosure> = Vec::new();
-    let mut visited: HashSet<NodeIndex> = HashSet::new();
-    let mut path: Vec<NodeIndex> = Vec::new(); // current DFS stack
-
-    fn dfs(
-        graph: &MoleculeGraph,
-        current: NodeIndex,
-        parent: &mut HashMap<NodeIndex, NodeIndex>,
-        ring_closures: &mut Vec<RingClosure>,
-        visited: &mut HashSet<NodeIndex>,
-        path: &mut Vec<NodeIndex>,
-    ) {
-        visited.insert(current);
-        path.push(current);
-        // Iterate over neighbors (in sorted order for stability).
-        let mut nbrs: Vec<NodeIndex> = graph.neighbors(current).collect();
-        nbrs.sort();
-        for nbr in nbrs {
-            // Skip the parent edge (if any)
-            if let Some(&p) = parent.get(&current) {
-                if nbr == p {
-                    continue;
-                }
-            }
-            if !visited.contains(&nbr) {
-                parent.insert(nbr, current);
-                dfs(graph, nbr, parent, ring_closures, visited, path);
-            } else if path.contains(&nbr) {
-                // Found a back edge: current -> nbr, where nbr is an ancestor.
-                // Record it as a ring closure. We assign a digit later.
-                // Only record if the edge isn’t already recorded (using ordered key).
-                let key = if current < nbr {
-                    (current, nbr)
-                } else {
-                    (nbr, current)
-                };
-                // Check if already recorded:
-                if !ring_closures.iter().any(|rc| {
-                    let existing_key = if rc.opening < rc.closing {
-                        (rc.opening, rc.closing)
-                    } else {
-                        (rc.closing, rc.opening)
-                    };
-                    existing_key == key
-                }) {
-                    ring_closures.push(RingClosure {
-                        opening: nbr,
-                        closing: current,
-                        bond: *graph
-                            .edge_weight(graph.find_edge(current, nbr).unwrap())
-                            .unwrap(),
-                        digit: 0, // placeholder; will assign digits in a later pass
-                    });
-                }
-            }
-        }
-        path.pop();
-    }
-
-    dfs(
-        graph,
-        start,
-        &mut parent,
-        &mut ring_closures,
-        &mut visited,
-        &mut path,
-    );
-    (parent, ring_closures)
-}
-/// Second pass: Generate SMILES from the spanning tree, inserting ring–closure markers
-/// and forcing branch notation when the current atom is a branching center.
-fn generate_smiles_from_tree(
-    graph: &MoleculeGraph,
-    root: NodeIndex,
-    parent: &HashMap<NodeIndex, NodeIndex>,
-    ring_closures: &mut Vec<RingClosure>,
-) -> String {
-    // First, assign digits to ring closures.
-    ring_closures.sort_by_key(|rc| (rc.opening.index(), rc.closing.index()));
-    for (i, rc) in ring_closures.iter_mut().enumerate() {
-        rc.digit = i + 1;
-    }
-
-    // Build the children mapping from the parent mapping.
-    let mut children: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
-    for (&child, &p) in parent.iter() {
-        children.entry(p).or_default().push(child);
-    }
-    // Sort children for stable output.
-    for child_list in children.values_mut() {
-        child_list.sort();
-    }
-
-    // Build lookups for ring closures.
-    let mut open_map: HashMap<NodeIndex, Vec<&RingClosure>> = HashMap::new();
-    let mut close_map: HashMap<NodeIndex, Vec<&RingClosure>> = HashMap::new();
-    for rc in ring_closures.iter() {
-        open_map.entry(rc.opening).or_default().push(rc);
-        close_map.entry(rc.closing).or_default().push(rc);
-    }
-
-    // Recursively generate SMILES with a modified DFS.
-    fn dfs_tree(
-        graph: &MoleculeGraph,
-        current: NodeIndex,
-        children: &HashMap<NodeIndex, Vec<NodeIndex>>,
-        open_map: &HashMap<NodeIndex, Vec<&RingClosure>>,
-        close_map: &HashMap<NodeIndex, Vec<&RingClosure>>,
-        is_root: bool,
-    ) -> String {
-        // Start with the current atom's symbol.
-        let mut s = graph[current].symbol();
-
-        // Insert ring closure markers that open at this atom.
-        if let Some(rcs) = open_map.get(&current) {
-            for rc in rcs {
-                let bond = match rc.bond {
-                    Bond::Single => "",
-                    Bond::Double => "=",
-                    Bond::Triple => "#",
-                    Bond::Aromatic => ":",
-                };
-                s.push_str(bond);
-                s.push_str(&format_ring(rc.digit));
-            }
-        }
-        // Insert ring closures that close at this atom after the atom symbol.
-        if let Some(rcs) = close_map.get(&current) {
-            for rc in rcs {
-                let bond = match rc.bond {
-                    Bond::Single => "",
-                    Bond::Double => "=",
-                    Bond::Triple => "#",
-                    Bond::Aromatic => ":",
-                };
-                s.push_str(bond);
-                s.push_str(&format_ring(rc.digit));
-            }
-        }
-        // Determine how many children this node has in the spanning tree.
-        let child_list = children.get(&current);
-        let num_children = child_list.map_or(0, |v| v.len());
-        // Compute the total degree in the spanning tree for a non-root node.
-        // For the root, we force branch notation for every child.
-        let force_branch = if is_root { true } else { num_children > 1 };
-
-        // Process children.
-        if let Some(child_nodes) = child_list {
-            let mut branch_str = String::new();
-            if force_branch {
-                // For each child, output as a branch (with bond symbol) enclosed in parentheses.
-                for &child in child_nodes.iter() {
-                    branch_str.push_str(&format!(
-                        "({}{})",
-                        bond_str(graph, current, child),
-                        dfs_tree(graph, child, children, open_map, close_map, false)
-                    ));
-                }
-            } else {
-                // Only one child: inline the continuation.
-                let child = child_nodes[0];
-                branch_str.push_str(&bond_str(graph, current, child));
-                branch_str.push_str(&dfs_tree(
-                    graph, child, children, open_map, close_map, false,
-                ));
-            }
-            s.push_str(&branch_str);
-        }
-        s
-    }
-
-    dfs_tree(graph, root, &children, &open_map, &close_map, true)
-}
-
-/// Returns the bond symbol for the edge between nodes `a` and `b`.
-fn bond_str(graph: &MoleculeGraph, a: NodeIndex, b: NodeIndex) -> String {
-    if let Some(edge) = graph.find_edge(a, b) {
-        let bond = graph.edge_weight(edge).unwrap();
-        match bond {
-            Bond::Single => "".to_string(),
-            Bond::Double => "=".to_string(),
-            Bond::Triple => "#".to_string(),
-            Bond::Aromatic => ":".to_string(),
-        }
-    } else {
-        "".to_string()
-    }
-}
-
-/// Formats a ring closure digit according to SMILES rules.
-fn format_ring(digit: usize) -> String {
-    if digit < 10 {
-        digit.to_string()
-    } else {
-        format!("%{}", digit)
-    }
-}
-
-/// Top-level function to convert a MoleculeGraph into a SMILES string.
-pub fn molecule_to_smiles(graph: &MoleculeGraph) -> String {
-    let start = graph.node_indices().next().unwrap();
-    let (parent, mut ring_closures) = compute_spanning_tree_and_ring_closures(graph, start);
-    generate_smiles_from_tree(graph, start, &parent, &mut ring_closures)
 }

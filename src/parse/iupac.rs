@@ -1,4 +1,19 @@
 // // parse.rs
+use crate::*;
+use anyhow::Result;
+
+pub fn molecule_to_iupac(g: &MoleculeGraph) -> Result<String> {
+    let mut g = g.clone();
+    g.retain_nodes(|g, n| !g[n].is_r_group());
+    let g = g.morgan_canonize();
+    // let g = g.canonize();
+    let smiles = molecule_to_smiles(&g).context("Could not convert to SMILES for naming")?;
+
+    Ok(lookup_smiles_to_iupac(&smiles).unwrap_or_else(|| {
+        // anyhow::anyhow!("Failed to convert molecule {smiles} to IUPAC name")
+        iupac_name(&g)
+    }))
+}
 
 // use nom::{
 //     branch::alt,

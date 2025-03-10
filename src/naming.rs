@@ -1213,7 +1213,12 @@ fn name_substituent(graph: &MoleculeGraph, neighbor: NodeIndex, exclude: NodeInd
         Element::F => "fluoro".to_string(),
         Element::Cl => "chloro".to_string(),
         Element::Br => "bromo".to_string(),
-        _ => "substituent".to_string(),
+        Element::I => "iodo".to_string(),
+        Element { kind, .. } if kind.is_r_group() => {
+            // Handle R-groups as generic substituents.
+            kind.symbol().to_string()
+        }
+        unknown => unknown.symbol().to_string(),
     }
 }
 
@@ -2600,7 +2605,7 @@ mod tests {
 
     #[test]
     fn test_esters() {
-        init_logging("trace");
+        // init_logging("trace");
         // A list of tuples: (SMILES string, expected IUPAC name)
         let smiles_and_correct_names = vec![
             ("COC(C)=O", "methyl-ethanoate"),
@@ -2645,6 +2650,7 @@ mod tests {
                 "For SMILES '{}' expected '{}' but got '{}' in {:#?}",
                 smiles, correct_name, generated_name, molecule
             );
+            println!("Correctly named {:<26} as {:<32} ✅", smiles, generated_name);
         }
     }
 
@@ -2754,10 +2760,10 @@ mod tests {
 
     #[test]
     fn test_amino_acids() {
-        init_logging("trace");
+        // init_logging("trace");
         // A list of tuples: (SMILES string, expected IUPAC name)
         let smiles_and_correct_names = vec![
-            ("NC(C(=O)O)CCCCN", "2,6-diaminohexanoic acid"), // 
+            ("NC(C(=O)O)CCCCN", "2,6-diaminohexanoic acid"),
             ("NC(C(=O)O)CCCNC(=N)N", "2-amino-5-guanidinopentanoic acid"),
             ("NC(C(=O)O)C", "2-aminopropanoic acid"),
             ("NC(C(=O)O)CC(N)=O", "2-amino-3-carbamoylpropanoic acid"),
@@ -2771,8 +2777,10 @@ mod tests {
             ("NC(C(=O)O)CO", "2-amino-3-hydroxypropanoic acid"),
             ("NC(C(=O)O)C(C)O", "2-amino-3-hydroxybutanoic acid"),
             ("NC(C(=O)O)C(C)C", "2-amino-3-methylbutanoic acid"),
-            // ("NC(C(=O)O)CC1=CC=CC=C1", "2-amino-3-phenylpropanoic acid"),
         ];
+
+
+        // ("NC(C(=O)O)CC1=CC=CC=C1", "2-amino-3-phenylpropanoic acid"),
         for (smiles, correct_name) in smiles_and_correct_names {
             // Parse the SMILES string into a molecule graph.
             let molecule = parse_smiles(smiles)
@@ -2793,6 +2801,7 @@ mod tests {
                 "For SMILES '{}' expected '{}' but got '{}'",
                 smiles, correct_name, generated_name
             );
+            println!("Correctly named {:<20} as {:<35} ✅", smiles, generated_name);
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     fmt::{Debug, Formatter, Result as FmtResult},
-    ops::RangeBounds,
+    ops::RangeBounds, str::FromStr,
 };
 
 use super::*;
@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use petgraph::graph::Node;
 use tracing::*;
 
-fn remove_subdivision<N, E>(graph: &mut UnGraph<N, E>, node: NodeIndex)
+fn remove_subdivision<N, E>(graph: &mut UnGraph<N, E>, node: NodeIndex) -> bool
 where
     E: PartialEq + Clone,
 {
@@ -23,19 +23,24 @@ where
         let edge2 = graph.find_edge(node, neighbors[1]).unwrap();
         let are_equal = graph[edge1] == graph[edge2];
         let weight = graph[edge1].clone();
+        if !are_equal {
+            error!("Removing subdivision between inconsistent edge weights");
+            return false
+        }
         // Connect the two neighbors
         graph.add_edge(neighbors[0], neighbors[1], weight);
 
         graph.remove_edge(edge1).unwrap();
         graph.remove_edge(edge2).unwrap();
 
-        if !are_equal {
-            panic!("Removing subdivision between inconsistent edge weights");
-        }
 
         // Remove the subdivision node
         graph.remove_node(node);
+        true
+    } else {
+        false
     }
+    
 }
 
 #[derive(Clone)]
@@ -77,6 +82,15 @@ impl Substituent {
             .map_err(|e| anyhow!("Failed to visualize: {}", e))?;
         Ok(())
     }
+    
+    pub fn from_smiles(s: &str) -> Result<Self> {
+        Self::parse_smiles(s)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.node_count() == 0
+    }
+
     /// Parse a SMILES string into a substituent.
     ///
     /// This minimal parser supports:
@@ -86,142 +100,158 @@ impl Substituent {
     /// - Branching via parentheses
     /// - Ring closures using digits
     pub fn parse_smiles(smiles: &str) -> Result<Self> {
-        use std::iter::Peekable;
-        use std::str::Chars;
+        let result = crate::parse_smiles(smiles)
+            .and_then(|graph| {
+                Ok(Substituent(graph))
+            });
 
-        // Create a new molecule graph.
-        let mut graph = MoleculeGraph::default();
-
-        // Mapping from ring closure digit to node index.
-        let mut ring_closures: HashMap<char, NodeIndex> = HashMap::new();
-        // A stack to hold nodes for branch starting points.
-        let mut branch_stack: Vec<NodeIndex> = Vec::new();
-        // If a bond is explicitly specified, we store it here.
-        let mut pending_bond: Option<Bond> = None;
-        // The most-recently parsed atom.
-        let mut current_node: Option<NodeIndex> = None;
-
-        // Create a peekable iterator over characters.
-        let mut chars: Peekable<Chars> = smiles.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            match ch {
-                // Start a branch: push the current atom onto the stack.
-                '(' => {
-                    if let Some(node) = current_node {
-                        branch_stack.push(node);
-                    } else {
-                        return Err(anyhow!("Encountered '(' with no current atom"));
-                    }
-                }
-                // End a branch: pop a saved node.
-                ')' => {
-                    current_node = Some(
-                        branch_stack
-                            .pop()
-                            .ok_or_else(|| anyhow!("Unmatched ')' in SMILES"))?,
-                    );
-                }
-                // Explicit bond symbols.
-                '-' | '=' | '#' | ':' => {
-                    pending_bond = Some(match ch {
-                        '-' => Bond::Single,
-                        '=' => Bond::Double,
-                        '#' => Bond::Triple,
-                        ':' => Bond::Aromatic,
-                        _ => unreachable!(),
-                    });
-                }
-                // A digit indicates a ring closure.
-                d if d.is_ascii_digit() => {
-                    if let Some(stored) = ring_closures.remove(&d) {
-                        // We have seen this digit before—close the ring.
-                        if let Some(curr) = current_node {
-                            let bond = pending_bond.take().unwrap_or(Bond::Single);
-                            graph.add_edge(stored, curr, bond);
-                        } else {
-                            return Err(anyhow!(
-                                "Ring closure digit encountered with no current atom"
-                            ));
-                        }
-                    } else {
-                        // First occurrence: store the current atom for later connection.
-                        if let Some(curr) = current_node {
-                            ring_closures.insert(d, curr);
-                        } else {
-                            return Err(anyhow!(
-                                "Ring closure digit encountered with no current atom"
-                            ));
-                        }
-                    }
-                }
-                // An alphabetic character starts an atom specification.
-                ch if ch.is_alphabetic() => {
-                    // Special case: the literal "R" represents an R group.
-                    if ch == 'R' {
-                        // Count the following number of apostrophes to determine the R group number.
-                        let mut count = 0;
-                        while let Some(&'\'') = chars.peek() {
-                            count += 1;
-                            chars.next();
-                        }
-                        debug!("R group count: {}", count);
-                        let r_group = Element::r_group(count);
-                        let new_node = graph.add_node(r_group);
-                        if let Some(prev) = current_node {
-                            let bond = pending_bond.take().unwrap_or(Bond::Single);
-                            graph.add_edge(prev, new_node, bond);
-                        }
-                        current_node = Some(new_node);
-                    } else {
-                        // Parse an element symbol. If the next character is lowercase, include it.
-                        let mut symbol = ch.to_string();
-                        if ch.is_ascii_uppercase() {
-                            if let Some(&next) = chars.peek() {
-                                if next.is_lowercase() {
-                                    symbol.push(chars.next().unwrap());
-                                }
-                            }
-                        }
-
-                        let element = match symbol.as_str() {
-                            "C" => Element::C,
-                            "O" => Element::O,
-                            "N" => Element::N,
-                            "Cl" => Element::Cl,
-                            "Br" => Element::Br,
-                            "c" => Element::C.as_aromatic(),
-                            "o" => Element::O.as_aromatic(),
-                            "n" => Element::N.as_aromatic(),
-                            // Extend here for additional elements as needed.
-                            _ => return Err(anyhow!("Unknown element symbol: {}", symbol)),
-                        };
-                        let new_node = graph.add_node(element);
-                        if let Some(prev) = current_node {
-                            let bond = pending_bond.take().unwrap_or(Bond::Single);
-                            graph.add_edge(prev, new_node, bond);
-                        }
-                        current_node = Some(new_node);
-                    }
-                }
-                // Anything else is unexpected.
-                _ => {
-                    return Err(anyhow!("Unexpected character in SMILES: {}", ch));
-                }
+        // Confirm no two R groups are connected
+        if let Ok(substituent) = &result {
+            if substituent.has_connected_r_groups() {
+                bail!("Found two R groups connected in {}, are you sure you're entering the right input?", smiles);
+            }
+            if substituent.is_empty() {
+                bail!("Found an empty substituent in {}, are you sure you're entering the right input?", smiles);
             }
         }
 
-        if !branch_stack.is_empty() {
-            return Err(anyhow!("Unmatched '(' found in SMILES"));
-        }
-        if !ring_closures.is_empty() {
-            return Err(anyhow!(
-                "Unclosed ring closures in SMILES: {:?}",
-                ring_closures.keys()
-            ));
-        }
+        result
+        // use std::iter::Peekable;
+        // use std::str::Chars;
 
-        Ok(Substituent(graph))
+        // // Create a new molecule graph.
+        // let mut graph = MoleculeGraph::default();
+
+        // // Mapping from ring closure digit to node index.
+        // let mut ring_closures: HashMap<char, NodeIndex> = HashMap::new();
+        // // A stack to hold nodes for branch starting points.
+        // let mut branch_stack: Vec<NodeIndex> = Vec::new();
+        // // If a bond is explicitly specified, we store it here.
+        // let mut pending_bond: Option<Bond> = None;
+        // // The most-recently parsed atom.
+        // let mut current_node: Option<NodeIndex> = None;
+
+        // // Create a peekable iterator over characters.
+        // let mut chars: Peekable<Chars> = smiles.chars().peekable();
+
+        // while let Some(ch) = chars.next() {
+        //     match ch {
+        //         // Start a branch: push the current atom onto the stack.
+        //         '(' => {
+        //             if let Some(node) = current_node {
+        //                 branch_stack.push(node);
+        //             } else {
+        //                 return Err(anyhow!("Encountered '(' with no current atom"));
+        //             }
+        //         }
+        //         // End a branch: pop a saved node.
+        //         ')' => {
+        //             current_node = Some(
+        //                 branch_stack
+        //                     .pop()
+        //                     .ok_or_else(|| anyhow!("Unmatched ')' in SMILES"))?,
+        //             );
+        //         }
+        //         // Explicit bond symbols.
+        //         '-' | '=' | '#' | ':' => {
+        //             pending_bond = Some(match ch {
+        //                 '-' => Bond::Single,
+        //                 '=' => Bond::Double,
+        //                 '#' => Bond::Triple,
+        //                 ':' => Bond::Aromatic,
+        //                 _ => unreachable!(),
+        //             });
+        //         }
+        //         // A digit indicates a ring closure.
+        //         d if d.is_ascii_digit() => {
+        //             if let Some(stored) = ring_closures.remove(&d) {
+        //                 // We have seen this digit before—close the ring.
+        //                 if let Some(curr) = current_node {
+        //                     let bond = pending_bond.take().unwrap_or(Bond::Single);
+        //                     graph.add_edge(stored, curr, bond);
+        //                 } else {
+        //                     return Err(anyhow!(
+        //                         "Ring closure digit encountered with no current atom"
+        //                     ));
+        //                 }
+        //             } else {
+        //                 // First occurrence: store the current atom for later connection.
+        //                 if let Some(curr) = current_node {
+        //                     ring_closures.insert(d, curr);
+        //                 } else {
+        //                     return Err(anyhow!(
+        //                         "Ring closure digit encountered with no current atom"
+        //                     ));
+        //                 }
+        //             }
+        //         }
+        //         // An alphabetic character starts an atom specification.
+        //         ch if ch.is_alphabetic() => {
+        //             // Special case: the literal "R" represents an R group.
+        //             if ch == 'R' {
+        //                 // Count the following number of apostrophes to determine the R group number.
+        //                 let mut count = 0;
+        //                 while let Some(&'\'') = chars.peek() {
+        //                     count += 1;
+        //                     chars.next();
+        //                 }
+        //                 debug!("R group count: {}", count);
+        //                 let r_group = Element::r_group(count);
+        //                 let new_node = graph.add_node(r_group);
+        //                 if let Some(prev) = current_node {
+        //                     let bond = pending_bond.take().unwrap_or(Bond::Single);
+        //                     graph.add_edge(prev, new_node, bond);
+        //                 }
+        //                 current_node = Some(new_node);
+        //             } else {
+        //                 // Parse an element symbol. If the next character is lowercase, include it.
+        //                 let mut symbol = ch.to_string();
+        //                 if ch.is_ascii_uppercase() {
+        //                     if let Some(&next) = chars.peek() {
+        //                         if next.is_lowercase() {
+        //                             symbol.push(chars.next().unwrap());
+        //                         }
+        //                     }
+        //                 }
+
+        //                 let element = match symbol.as_str() {
+        //                     "C" => Element::C,
+        //                     "O" => Element::O,
+        //                     "N" => Element::N,
+        //                     "Cl" => Element::Cl,
+        //                     "Br" => Element::Br,
+        //                     "c" => Element::C.as_aromatic(),
+        //                     "o" => Element::O.as_aromatic(),
+        //                     "n" => Element::N.as_aromatic(),
+        //                     // Extend here for additional elements as needed.
+        //                     _ => return Err(anyhow!("Unknown element symbol: {}", symbol)),
+        //                 };
+        //                 let new_node = graph.add_node(element);
+        //                 if let Some(prev) = current_node {
+        //                     let bond = pending_bond.take().unwrap_or(Bond::Single);
+        //                     graph.add_edge(prev, new_node, bond);
+        //                 }
+        //                 current_node = Some(new_node);
+        //             }
+        //         }
+        //         // Anything else is unexpected.
+        //         _ => {
+        //             return Err(anyhow!("Unexpected character in SMILES: {}", ch));
+        //         }
+        //     }
+        // }
+
+        // if !branch_stack.is_empty() {
+        //     return Err(anyhow!("Unmatched '(' found in SMILES"));
+        // }
+        // if !ring_closures.is_empty() {
+        //     return Err(anyhow!(
+        //         "Unclosed ring closures in SMILES: {:?}",
+        //         ring_closures.keys()
+        //     ));
+        // }
+
+        // Ok(Substituent(graph))
     }
 
     /// Remove any R groups that are connected -- these are just placeholders for
@@ -229,14 +259,22 @@ impl Substituent {
     fn remove_connected_r_groups(&mut self) {
         // Find all the R groups
         while self.has_connected_r_groups() {
+            let mut removed = false;
             for r_group in self.find_r_groups() {
                 // Check to confirm that the R group is connected to more than one node
                 if self.0.neighbors(r_group).count() <= 1 {
                     continue;
                 }
-                remove_subdivision(&mut self.0, r_group);
+                removed = removed || remove_subdivision(&mut self.0, r_group);
                 break;
             }
+            if !removed {
+                break;
+            }
+        }
+
+        if self.has_connected_r_groups() {
+            warn!("Possible incorrect usage of R groups, some R groups are still connected");
         }
     }
 
@@ -713,6 +751,14 @@ impl Substituent {
         graph.add_edge(r1, halide, Bond::Single);
         Substituent(graph)
     }
+
+    pub fn to_smiles(&self) -> Result<String> {
+        molecule_to_smiles(&self.0)
+    }
+
+    pub fn to_iupac(&self) -> Result<String> {
+        molecule_to_iupac(&self.0)
+    }
 }
 
 impl From<OrganicMolecule> for Substituent {
@@ -733,7 +779,7 @@ impl From<Element> for Substituent {
 
 impl Debug for Substituent {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}", molecule_to_smiles(&self.0))
+        write!(f, "{}", self.to_smiles().unwrap_or_else(|_| formula_string(&self.to_molecule_graph())))
     }
 }
 
@@ -1046,9 +1092,84 @@ impl OrganicMolecule {
         self.as_substituent().is_same_as(&other.as_substituent())
     }
 
+    pub fn from_iupac(iupac: &str) -> Result<Self> {
+        if let Some(smiles) = lookup_iupac_to_smiles(iupac) {
+            Substituent::parse_smiles(&smiles)
+                .map(OrganicMolecule::from)
+                .or_else(|_| Self::parse_smiles(&smiles))
+        } else {
+            bail!("No SMILES found for the given IUPAC name")
+        }
+    }
+
+    pub fn from_sexpr(input: impl AsRef<str>) -> Result<Self> {
+        let input = input.as_ref().trim();
+
+        match SExpr::from_str(input) {
+            Ok(sexpr) => Self::from_sexpr_helper(&sexpr),
+            Err(_) => {
+                // Try again but wrap in parentheses
+                match SExpr::from_str(&format!("{{{}}}", input)) {
+                    Ok(sexpr) => Self::from_sexpr_helper(&sexpr),
+                    Err(_) => {
+                        // Try again but wrap in curly braces
+                        bail!("Failed to parse S-Expression")
+                    }
+                }
+            }
+        }
+    }
+
+    fn from_sexpr_helper(sexpr: &SExpr) -> Result<Self> {
+        // If the S-Expression is a list, recursively parse each element
+        match sexpr {
+            SExpr::Atom(atom) => {
+                // Try as a SMILES string
+                let result = Substituent::from_smiles(&atom);
+                match result {
+                    Ok(mol) => Ok(OrganicMolecule::from(mol)),
+                    Err(e) => {
+                        if let Ok(mol) = Self::from_iupac(&atom) {
+                            return Ok(mol);
+                        }
+                        Err(e).context(format!("Failed to parse substituent {}", atom))
+                    }
+                }
+            }
+            SExpr::List(list) => {
+                trace!("Parsing S-Expression list: {:?}", list);
+                let substituents = list
+                    .iter()
+                    .map(|s| Self::from_sexpr_helper(s))
+                    .collect::<Result<Vec<_>>>()?;
+                trace!("Parsed {} substituents: {:?}", substituents.len(), substituents);
+                let root = substituents[0].clone();
+                if substituents.len() <= 1 {
+                    Ok(root)
+                } else {
+                    root.bind(substituents[1..].to_vec())
+                }
+            }
+        }
+    }
+
+    pub fn from_smiles(smiles: &str) -> Result<Self> {
+        Self::parse_smiles(smiles)
+    }
+    
+    pub fn is_empty(&self) -> bool {
+        match self {
+            OrganicMolecule::Substituent(sub) => sub.is_empty(),
+            OrganicMolecule::Compound(others) => {
+                others.node_count() == 0
+                || others.node_indices().all(|n| others[n].is_empty())
+            },
+        }
+    }
+
     /// Parse a SMILES string into an OrganicMolecule by first building its graph and then
     /// structurally matching known functional group patterns.
-    pub fn parse_smiles(smiles: &str) -> Result<Self> {
+    fn parse_smiles(smiles: &str) -> Result<Self> {
         // First, parse the SMILES into a substituent (and hence a MoleculeGraph)
         let substituent = Substituent::parse_smiles(smiles)?;
         let raw_graph = substituent.to_raw_graph().clone();
@@ -1085,14 +1206,18 @@ impl OrganicMolecule {
 
     pub fn bind(&self, sites: impl IntoIterator<Item = Self>) -> Result<Self> {
         let sites = sites.into_iter().collect::<Vec<_>>();
+        let mut result = self.clone();
         // Confirm we have enough sites to bind
         if self.count_r_groups() < sites.len() {
-            bail!("Not enough R groups in the target molecule to bind all sites");
+            // bail!("Not enough R groups in the target molecule to bind all sites");
+            for _ in 0..sites.len() - self.count_r_groups() {
+                result.add_r_group();
+            }
         }
 
         // Create a new organic molecule
         let mut graph = UnGraph::new_undirected();
-        let root = graph.add_node(self.clone());
+        let root = graph.add_node(result.clone());
 
         // Bind the sites to the molecule
         for site in sites {
@@ -1324,24 +1449,60 @@ impl OrganicMolecule {
     }
 
     fn add_r_group(&mut self) {
-        if let OrganicMolecule::Substituent(sub) = self {
-            warn!("Adding R group to substituent with no R groups: {:?}", sub);
-            // Connect an R group to the first carbon
-            let carbon = sub
-                .0
-                .node_indices()
-                .find(|&node| sub.0[node].is_carbon())
-                .unwrap();
-            let r_group = sub.0.add_node(Element::r_group(0));
-            sub.0.add_edge(carbon, r_group, Bond::Single);
-        } else {
-            // Topologically sort the graph
-            let graph = self.mut_graph();
-            let sorted = petgraph::algo::toposort(&*graph, None).unwrap();
-            // Get the first node
-            let first_node = sorted.first().unwrap();
-            // Add an R group to the first node
-            graph[*first_node].add_r_group();
+        match self {
+            OrganicMolecule::Substituent(sub) => {
+                warn!("Adding R group to substituent with no R groups: {:?}", sub);
+    
+                // Add to the first node
+                let first_node = sub.0.node_indices().next().unwrap();
+                let r_group = sub.0.add_node(Element::r_group(sub.count_r_groups()));
+                sub.0.add_edge(first_node, r_group, Bond::Single);
+                warn!("No carbon found in substituent: {:?}", sub);
+            }
+            // warn!("Adding R group to substituent with no R groups: {:?}", sub);
+            // // Connect an R group to the first carbon
+            // let carbon = sub
+            //     .0
+            //     .node_indices()
+            //     .find(|&node| sub.0[node].is_carbon());
+            // if let Some(carbon) = carbon {
+            //     info!("Adding R group to carbon: {:?}", carbon);
+            //     let r_group = sub.0.add_node(Element::r_group(0));
+            //     sub.0.add_edge(carbon, r_group, Bond::Single);
+            // } else {
+            //     // Check if the substituent is a single atom
+            //     if sub.0.node_count() == 1 {
+            //         // Add an R group to the single atom
+            //         let r_group = sub.0.add_node(Element::r_group(0));
+            //         info!("Adding R group to single atom: {:?}", sub);
+            //         sub.0.add_edge(sub.0.node_indices().next().unwrap(), r_group, Bond::Single);
+            //     } else {
+            //         // Add to the first node
+            //         let first_node = sub.0.node_indices().next().unwrap();
+            //         let r_group = sub.0.add_node(Element::r_group(0));
+            //         sub.0.add_edge(first_node, r_group, Bond::Single);
+            //         warn!("No carbon found in substituent: {:?}", sub);
+            //     }
+            // }
+            OrganicMolecule::Compound(graph) => {
+                // Add an R group to the first node
+                let first_node = graph.node_indices().next().unwrap();
+                graph[first_node].add_r_group();
+            }
+            // let sub = self.as_substituent();
+            // *self = OrganicMolecule::from(sub);
+            // self.add_r_group();
+
+            // Get the first substituent
+            
+
+            // // Topologically sort the graph
+            // let graph = self.mut_graph();
+            // let sorted = petgraph::algo::toposort(&*graph, None).unwrap();
+            // // Get the first node
+            // let first_node = sorted.first().unwrap();
+            // // Add an R group to the first node
+            // graph[*first_node].add_r_group();
         }
     }
 
@@ -1434,7 +1595,9 @@ impl OrganicMolecule {
             let s2 = s2_orgo.as_substituent().clone();
 
             // Connect the two substituents
-            s1.connect(&s2).expect("Failed to connect substituents");
+            if s1.connect(&s2).is_err() {
+                error!("Failed to connect substituents: {:?} and {:?}", s1, s2);
+            }
 
             // Store the new substituent back in the graph
             graph[s1_node_idx] = s1.into();
@@ -1499,11 +1662,64 @@ impl OrganicMolecule {
     }
 
     pub fn to_smiles(&self) -> Result<String> {
-        Ok(molecule_to_smiles(&self.to_molecule_graph()))
+        molecule_to_smiles(&self.to_molecule_graph())
     }
 
     pub fn to_iupac(&self) -> Result<String> {
-        Ok(iupac_name(&self.to_molecule_graph()))
+        molecule_to_iupac(&self.to_molecule_graph())
+    }
+
+    pub fn substituents(&self) -> Vec<OrganicMolecule> {
+        match self {
+            OrganicMolecule::Substituent(sub) => vec![OrganicMolecule::from(sub.clone())],
+            OrganicMolecule::Compound(graph) => {
+                graph.node_indices().map(|idx| graph[idx].clone()).collect()
+            }
+        }
+    }
+
+    pub fn substituents_recursive(&self) -> Vec<OrganicMolecule> {
+        match self {
+            OrganicMolecule::Substituent(sub) => vec![OrganicMolecule::from(sub.clone())],
+            OrganicMolecule::Compound(graph) => {
+                std::iter::once(self.clone()).chain(graph.node_indices().flat_map(|idx| graph[idx].substituents_recursive())).collect()
+            }
+        }
+    }
+
+    pub fn visualize_substituents(&self) -> Result<usize> {
+        Ok(match self {
+            OrganicMolecule::Substituent(sub) => {
+                sub.visualize("substituent_0.png")?;
+                1
+            }
+            OrganicMolecule::Compound(graph) => {
+                // for node in graph.node_indices() {
+                //     let sub = &graph[node];
+                //     sub.visualize(&format!("substituent_{}.png", node.index()))?;
+                // }
+                let mut offset = 0;
+                self.visualize_substituents_helper(&mut offset)?;
+                offset
+            }
+        })
+    }
+
+    fn visualize_substituents_helper(&self, offset: &mut usize) -> Result<()> {
+        *offset += 1;
+        Ok(match self {
+            OrganicMolecule::Substituent(sub) => {
+                sub.visualize(&format!("substituent_{}.png", offset))?;
+            }
+            OrganicMolecule::Compound(graph) => {
+                self.visualize(&format!("substituent_{}.png", offset))?;
+                for node in graph.node_indices() {
+                    let sub = &graph[node];
+                    sub.visualize_substituents_helper(offset)?;
+                    // sub.visualize(&format!("substituent_{}.png", node.index() + offset))?;
+                }
+            }
+        })
     }
 }
 
@@ -1519,6 +1735,12 @@ impl Debug for OrganicMolecule {
                 fmt.finish()
             }
         }
+    }
+}
+
+impl From<MoleculeGraph> for OrganicMolecule {
+    fn from(substituent: MoleculeGraph) -> Self {
+        OrganicMolecule::Substituent(Substituent(substituent))
     }
 }
 
