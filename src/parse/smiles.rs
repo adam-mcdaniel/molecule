@@ -33,13 +33,15 @@ pub enum SmilesError {
 ///
 /// * `Result<MoleculeGraph, String>` - The parsed molecular graph or an error message.
 pub fn parse_smiles(smiles: &str) -> Result<MoleculeGraph> {
-    parse_smiles_helper(smiles)
-        .context(format!("Failed to parse SMILES string {smiles}"))
+    parse_smiles_helper(smiles).context(format!("Failed to parse SMILES string {smiles}"))
 }
 
 /// Helper: Merge a fragment MoleculeGraph into the main graph.
 /// Returns a mapping from the fragment’s NodeIndex to the new NodeIndex in `main`.
-fn merge_fragment_into_graph(main: &mut MoleculeGraph, frag: &MoleculeGraph) -> BTreeMap<NodeIndex, NodeIndex> {
+fn merge_fragment_into_graph(
+    main: &mut MoleculeGraph,
+    frag: &MoleculeGraph,
+) -> BTreeMap<NodeIndex, NodeIndex> {
     let mut mapping = BTreeMap::new();
     // Add all nodes from the fragment into the main graph.
     for node in frag.node_indices() {
@@ -160,11 +162,19 @@ fn parse_smiles_helper(smiles: &str) -> Result<MoleculeGraph> {
                 // Ring closure with two-digit label.
                 // Ensure there are two more characters.
                 if i + 2 >= chars.len() {
-                    return Err(anyhow::anyhow!("Incomplete ring closure after '%' at position {}", i));
+                    return Err(anyhow::anyhow!(
+                        "Incomplete ring closure after '%' at position {}",
+                        i
+                    ));
                 }
-                let digits: String = chars[i+1..i+3].iter().collect();
+                let digits: String = chars[i + 1..i + 3].iter().collect();
                 let ring_number: u8 = digits.parse().map_err(|e| {
-                    anyhow::anyhow!("Failed to parse ring closure digits '{}' at position {}: {}", digits, i, e)
+                    anyhow::anyhow!(
+                        "Failed to parse ring closure digits '{}' at position {}: {}",
+                        digits,
+                        i,
+                        e
+                    )
                 })?;
                 // Process the ring closure similarly to a single-digit closure.
                 if let Some(&start_atom) = ring_map.get(&ring_number) {
@@ -251,13 +261,17 @@ fn parse_smiles_helper(smiles: &str) -> Result<MoleculeGraph> {
                         .filter(|&ch| ch != '+' && ch != '-')
                         .collect();
                     // Remove any leading digits (isotope information)
-                    let cleaned = cleaned.trim_start_matches(|c: char| c.is_numeric()).to_string();
+                    let cleaned = cleaned
+                        .trim_start_matches(|c: char| c.is_numeric())
+                        .to_string();
 
                     // Try to parse the cleaned content as an element with explicit hydrogen count.
                     if let Ok((element, h_count)) = parse_bracketed_smiles(&cleaned) {
                         let new_atom = graph.add_node(element);
                         if let Some(prev_atom) = current_atom {
-                            let bond_to_use = if graph[prev_atom].is_aromatic() && graph[new_atom].is_aromatic() {
+                            let bond_to_use = if graph[prev_atom].is_aromatic()
+                                && graph[new_atom].is_aromatic()
+                            {
                                 Bond::Aromatic
                             } else {
                                 bond_type.clone()
@@ -277,14 +291,16 @@ fn parse_smiles_helper(smiles: &str) -> Result<MoleculeGraph> {
                             .context(format!("Parsing fragment '{}' inside brackets", cleaned))?;
                         if let Some(prev_atom) = current_atom {
                             let mapping = merge_fragment_into_graph(&mut graph, &fragment_graph);
-                            let frag_root = mapping.get(&NodeIndex::new(0))
+                            let frag_root = mapping
+                                .get(&NodeIndex::new(0))
                                 .expect("Fragment has no nodes");
                             graph.add_edge(prev_atom, *frag_root, Single);
                             current_atom = Some(*frag_root);
                             bond_type = Single;
                         } else {
                             let mapping = merge_fragment_into_graph(&mut graph, &fragment_graph);
-                            let frag_root = mapping.get(&NodeIndex::new(0))
+                            let frag_root = mapping
+                                .get(&NodeIndex::new(0))
                                 .expect("Fragment has no nodes");
                             current_atom = Some(*frag_root);
                             bond_type = Single;
@@ -347,7 +363,7 @@ fn parse_smiles_helper(smiles: &str) -> Result<MoleculeGraph> {
                 }
                 // Create a new atom for the R group.
                 let atom_str = format!("R{}", "'".repeat(r_count));
-                
+
                 let element = Element::from_smiles(&atom_str).context("Failed to parse element")?;
                 let new_atom = graph.add_node(element);
                 if let Some(prev_atom) = current_atom {
@@ -421,12 +437,11 @@ fn parse_smiles_helper(smiles: &str) -> Result<MoleculeGraph> {
     Ok(graph)
 }
 
-
 /// Convert a SMILES string into a canonical SMILES for database lookup.
-/// 
+///
 /// This function uses your custom SMILES parser to get a molecule graph and then
 /// performs a naïve DFS-based serialization (which works well only for acyclic graphs).
-/// 
+///
 /// # Arguments
 ///
 /// * `smiles` - A SMILES string to canonicalize.
@@ -445,23 +460,27 @@ pub fn canonize_smiles(smiles: &str) -> Result<String> {
     let graph = parse_smiles(smiles)?;
     let graph = graph.morgan_canonize();
     // let graph = graph.canonize();
-    let canon_smiles = molecule_to_smiles(&graph)
-        .context(format!("Failed to canonize SMILES: {smiles}"))?;
+    let canon_smiles =
+        molecule_to_smiles(&graph).context(format!("Failed to canonize SMILES: {smiles}"))?;
     let original = Substituent::parse_smiles(smiles).expect("Failed to parse original SMILES");
     let canon = Substituent::parse_smiles(&canon_smiles).expect("Failed to parse canonical SMILES");
     if !original.is_same_as(&canon) {
         println!("Original: {}", smiles);
         println!("Canonical: {}", canon_smiles);
 
-        original.visualize("original.png").expect("Failed to visualize original");
-        canon.visualize("canonical.png").expect("Failed to visualize canonical");
+        original
+            .visualize("original.png")
+            .expect("Failed to visualize original");
+        canon
+            .visualize("canonical.png")
+            .expect("Failed to visualize canonical");
         panic!("Original and canonical SMILES do not match");
     }
     Ok(canon_smiles)
 }
 
 /// A naïve DFS-based canonical SMILES generator.
-/// 
+///
 /// **Note:** This implementation does not handle rings/cycles correctly. It is intended
 /// only as an illustrative example of how you might “canonicalize” a molecule for lookup.
 /// For a full solution, you would need to implement ring closure handling and a robust
@@ -529,10 +548,20 @@ fn is_alternating(bonds: &[Bond]) -> bool {
         return false;
     }
     let pattern1 = [
-        Bond::Single, Bond::Double, Bond::Single, Bond::Double, Bond::Single, Bond::Double,
+        Bond::Single,
+        Bond::Double,
+        Bond::Single,
+        Bond::Double,
+        Bond::Single,
+        Bond::Double,
     ];
     let pattern2 = [
-        Bond::Double, Bond::Single, Bond::Double, Bond::Single, Bond::Double, Bond::Single,
+        Bond::Double,
+        Bond::Single,
+        Bond::Double,
+        Bond::Single,
+        Bond::Double,
+        Bond::Single,
     ];
     bonds == pattern1 || bonds == pattern2
 }
@@ -577,7 +606,7 @@ fn compute_spanning_tree_and_ring_closures(
                 // Compute the cycle (ring) from nbr to current.
                 if let Some(pos) = path.iter().position(|&node| node == nbr) {
                     let ring_nodes: Vec<NodeIndex> = path[pos..].to_vec(); // from ancestor to current
-                    // The full cycle is ring_nodes plus the closure edge (current->nbr)
+                                                                           // The full cycle is ring_nodes plus the closure edge (current->nbr)
                     if ring_nodes.len() == 6 {
                         // Check that all atoms in the ring are carbon.
                         if ring_nodes.iter().all(|&n| {
@@ -603,7 +632,9 @@ fn compute_spanning_tree_and_ring_closures(
                                         *graph.edge_weight_mut(edge).unwrap() = Bond::Aromatic;
                                     }
                                 }
-                                if let Some(edge) = graph.find_edge(*ring_nodes.last().unwrap(), nbr) {
+                                if let Some(edge) =
+                                    graph.find_edge(*ring_nodes.last().unwrap(), nbr)
+                                {
                                     *graph.edge_weight_mut(edge).unwrap() = Bond::Aromatic;
                                 }
 
@@ -616,7 +647,11 @@ fn compute_spanning_tree_and_ring_closures(
                     }
                 }
                 // Record the ring closure if not already recorded.
-                let key = if current < nbr { (current, nbr) } else { (nbr, current) };
+                let key = if current < nbr {
+                    (current, nbr)
+                } else {
+                    (nbr, current)
+                };
                 if !ring_closures.iter().any(|rc| {
                     let existing_key = if rc.opening < rc.closing {
                         (rc.opening, rc.closing)
@@ -937,15 +972,20 @@ pub fn molecule_to_smiles(graph: &MoleculeGraph) -> Result<String> {
     let start = graph.node_indices().next();
     match start {
         Some(start) => {
-            let (parent, mut ring_closures) = compute_spanning_tree_and_ring_closures(&mut graph, start);
-            Ok(generate_smiles_from_tree(&graph, start, &parent, &mut ring_closures))
+            let (parent, mut ring_closures) =
+                compute_spanning_tree_and_ring_closures(&mut graph, start);
+            Ok(generate_smiles_from_tree(
+                &graph,
+                start,
+                &parent,
+                &mut ring_closures,
+            ))
         }
         None => {
             return Err(anyhow::anyhow!("Empty graph"));
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

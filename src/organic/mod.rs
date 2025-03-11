@@ -1,7 +1,8 @@
 use std::{
     collections::VecDeque,
     fmt::{Debug, Formatter, Result as FmtResult},
-    ops::RangeBounds, str::FromStr,
+    ops::RangeBounds,
+    str::FromStr,
 };
 
 use super::*;
@@ -25,7 +26,7 @@ where
         let weight = graph[edge1].clone();
         if !are_equal {
             error!("Removing subdivision between inconsistent edge weights");
-            return false
+            return false;
         }
         // Connect the two neighbors
         graph.add_edge(neighbors[0], neighbors[1], weight);
@@ -33,14 +34,12 @@ where
         graph.remove_edge(edge1).unwrap();
         graph.remove_edge(edge2).unwrap();
 
-
         // Remove the subdivision node
         graph.remove_node(node);
         true
     } else {
         false
     }
-    
 }
 
 #[derive(Clone)]
@@ -82,7 +81,7 @@ impl Substituent {
             .map_err(|e| anyhow!("Failed to visualize: {}", e))?;
         Ok(())
     }
-    
+
     pub fn from_smiles(s: &str) -> Result<Self> {
         Self::parse_smiles(s)
     }
@@ -100,10 +99,7 @@ impl Substituent {
     /// - Branching via parentheses
     /// - Ring closures using digits
     pub fn parse_smiles(smiles: &str) -> Result<Self> {
-        let result = crate::parse_smiles(smiles)
-            .and_then(|graph| {
-                Ok(Substituent(graph))
-            });
+        let result = crate::parse_smiles(smiles).and_then(|graph| Ok(Substituent(graph)));
 
         // Confirm no two R groups are connected
         if let Ok(substituent) = &result {
@@ -779,7 +775,12 @@ impl From<Element> for Substituent {
 
 impl Debug for Substituent {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}", self.to_smiles().unwrap_or_else(|_| formula_string(&self.to_molecule_graph())))
+        write!(
+            f,
+            "{}",
+            self.to_smiles()
+                .unwrap_or_else(|_| formula_string(&self.to_molecule_graph()))
+        )
     }
 }
 
@@ -1142,7 +1143,11 @@ impl OrganicMolecule {
                     .iter()
                     .map(|s| Self::from_sexpr_helper(s))
                     .collect::<Result<Vec<_>>>()?;
-                trace!("Parsed {} substituents: {:?}", substituents.len(), substituents);
+                trace!(
+                    "Parsed {} substituents: {:?}",
+                    substituents.len(),
+                    substituents
+                );
                 let root = substituents[0].clone();
                 if substituents.len() <= 1 {
                     Ok(root)
@@ -1156,14 +1161,13 @@ impl OrganicMolecule {
     pub fn from_smiles(smiles: &str) -> Result<Self> {
         Self::parse_smiles(smiles)
     }
-    
+
     pub fn is_empty(&self) -> bool {
         match self {
             OrganicMolecule::Substituent(sub) => sub.is_empty(),
             OrganicMolecule::Compound(others) => {
-                others.node_count() == 0
-                || others.node_indices().all(|n| others[n].is_empty())
-            },
+                others.node_count() == 0 || others.node_indices().all(|n| others[n].is_empty())
+            }
         }
     }
 
@@ -1452,7 +1456,7 @@ impl OrganicMolecule {
         match self {
             OrganicMolecule::Substituent(sub) => {
                 warn!("Adding R group to substituent with no R groups: {:?}", sub);
-    
+
                 // Add to the first node
                 let first_node = sub.0.node_indices().next().unwrap();
                 let r_group = sub.0.add_node(Element::r_group(sub.count_r_groups()));
@@ -1488,21 +1492,19 @@ impl OrganicMolecule {
                 // Add an R group to the first node
                 let first_node = graph.node_indices().next().unwrap();
                 graph[first_node].add_r_group();
-            }
-            // let sub = self.as_substituent();
-            // *self = OrganicMolecule::from(sub);
-            // self.add_r_group();
+            } // let sub = self.as_substituent();
+              // *self = OrganicMolecule::from(sub);
+              // self.add_r_group();
 
-            // Get the first substituent
-            
+              // Get the first substituent
 
-            // // Topologically sort the graph
-            // let graph = self.mut_graph();
-            // let sorted = petgraph::algo::toposort(&*graph, None).unwrap();
-            // // Get the first node
-            // let first_node = sorted.first().unwrap();
-            // // Add an R group to the first node
-            // graph[*first_node].add_r_group();
+              // // Topologically sort the graph
+              // let graph = self.mut_graph();
+              // let sorted = petgraph::algo::toposort(&*graph, None).unwrap();
+              // // Get the first node
+              // let first_node = sorted.first().unwrap();
+              // // Add an R group to the first node
+              // graph[*first_node].add_r_group();
         }
     }
 
@@ -1681,9 +1683,13 @@ impl OrganicMolecule {
     pub fn substituents_recursive(&self) -> Vec<OrganicMolecule> {
         match self {
             OrganicMolecule::Substituent(sub) => vec![OrganicMolecule::from(sub.clone())],
-            OrganicMolecule::Compound(graph) => {
-                std::iter::once(self.clone()).chain(graph.node_indices().flat_map(|idx| graph[idx].substituents_recursive())).collect()
-            }
+            OrganicMolecule::Compound(graph) => std::iter::once(self.clone())
+                .chain(
+                    graph
+                        .node_indices()
+                        .flat_map(|idx| graph[idx].substituents_recursive()),
+                )
+                .collect(),
         }
     }
 

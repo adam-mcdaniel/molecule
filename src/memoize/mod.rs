@@ -1,14 +1,14 @@
+use crate::canonize_smiles;
+use crate::Name;
+use anyhow::Result;
+use csv::Writer;
+use csv::{ReaderBuilder, StringRecord};
+use lazy_static::lazy_static;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io;
-use crate::canonize_smiles;
-use lazy_static::lazy_static;
-use anyhow::Result;
-use csv::{ReaderBuilder, StringRecord};
-use csv::Writer;
-use std::collections::{BTreeMap, BTreeSet};
-use crate::Name;
-use tracing::*;
 use std::io::Read;
+use tracing::*;
 
 type DatabaseEntry = Name;
 type CSVDatabase = Vec<(DatabaseEntry, Vec<DatabaseEntry>)>;
@@ -18,7 +18,7 @@ fn read_csv_database(csv_data: &str, smiles_column: usize, iupac_column: usize) 
         .has_headers(true)
         .from_reader(csv_data.as_bytes());
     let mut records = Vec::new();
-    
+
     // Parse each record and push the tuple (SMILES, IUPACName) into the vector.
     for result in rdr.records() {
         let record: StringRecord = result.expect("Error reading record");
@@ -31,7 +31,8 @@ fn read_csv_database(csv_data: &str, smiles_column: usize, iupac_column: usize) 
         }
 
         // Split the IUPAC name by semicolon and collect into a vector.
-        let iupac: Vec<_> = iupac.split(';')
+        let iupac: Vec<_> = iupac
+            .split(';')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_owned())
@@ -51,7 +52,7 @@ lazy_static! {
         // Include the CSV data as a string at compile time.
         // Ensure that "output.csv" is in your project's source directory or adjust the path accordingly.
         let csv_data = include_str!("extended-molecules.csv");
-        
+
         // Read the CSV data into a string.
         read_csv_database(csv_data, 0, 1)
         // // Create a CSV reader from the string bytes.
@@ -59,7 +60,7 @@ lazy_static! {
         //     .has_headers(true)
         //     .from_reader(csv_data.as_bytes());
         // let mut records = Vec::new();
-        
+
         // // Parse each record and push the tuple (SMILES, IUPACName) into the vector.
         // for result in rdr.records() {
         //     let record: StringRecord = result.expect("Error reading record");
@@ -146,7 +147,6 @@ pub fn lookup_iupac_to_smiles(input: &str) -> Option<String> {
     })
 }
 
-
 pub fn lookup_smiles_to_iupac(input: &str) -> Option<String> {
     // First, try a direct lookup.
     let smiles = DatabaseEntry::from(input.to_owned());
@@ -169,7 +169,8 @@ fn extend_csv_database_with_canonical(csv_data: &str) -> Result<Vec<(String, Str
     let database = read_csv_database(csv_data, 1, 2);
     for (orig_smiles, iupac) in database.iter() {
         // Compute the canonical SMILES using our custom function.
-        let canon_smiles = canonize_smiles(&canonize_smiles(&canonize_smiles(orig_smiles.as_ref())?)?)?;
+        let canon_smiles =
+            canonize_smiles(&canonize_smiles(&canonize_smiles(orig_smiles.as_ref())?)?)?;
         let iupacs: Vec<&str> = iupac.iter().map(|name| name.as_ref()).collect();
         let iupac = iupacs.join("; ");
         extended.push((canon_smiles, orig_smiles.to_string(), iupac));

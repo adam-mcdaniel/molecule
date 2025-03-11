@@ -112,20 +112,20 @@ pub fn molecule_graph_to_unit_graph(mol: &MoleculeGraph) -> Graph<(), (), Undire
     let mut new_graph = Graph::<(), (), Undirected>::new_undirected();
     // Map each node in the original graph to a node in the new graph.
     let mut node_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
-    
+
     // Iterate over all nodes in the original graph.
     for node in mol.node_indices() {
         let new_node = new_graph.add_node(());
         node_map.insert(node, new_node);
     }
-    
+
     // Iterate over all edges in the original graph and add them to the new graph.
     for edge in mol.edge_references() {
         let source = node_map[&edge.source()];
         let target = node_map[&edge.target()];
         new_graph.add_edge(source, target, ());
     }
-    
+
     new_graph
 }
 
@@ -139,13 +139,13 @@ mod tests {
         // let mol = test_molecule_graph();
         let mol = parse_smiles("C1=CC=CC=C1").unwrap();
         let unit_graph = molecule_graph_to_unit_graph(&mol);
-        
+
         // Check that the number of nodes is the same.
         assert_eq!(mol.node_count(), unit_graph.node_count());
-        
+
         // Check that the number of edges is the same.
         assert_eq!(mol.edge_count(), unit_graph.edge_count());
-        
+
         // Check that the topology is the same.
         for edge in mol.edge_references() {
             let source = edge.source();
@@ -160,14 +160,14 @@ mod tests {
         use nauty_pet::canon::*;
         let mol1 = parse_smiles("c1c(R)c1").unwrap();
         let mol2 = parse_smiles("c1cc1R").unwrap();
-        
+
         // let canonized1 = mol1.into_canon();
         // let canonized2 = mol2.into_canon();
         // let canonized1 = mol1.clone();
         // let canonized2 = mol2.clone();
         let canonized1 = canonize(&mol1);
         let canonized2 = canonize(&mol2);
-        
+
         println!("Canonized 1: {:?}", canonized1);
         println!("Canonized 2: {:?}", canonized2);
 

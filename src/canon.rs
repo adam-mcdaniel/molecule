@@ -1,11 +1,11 @@
+use crate::*;
+use petgraph::graph::{NodeIndex, UnGraph};
+use petgraph::visit::EdgeRef;
+use petgraph::visit::IntoNodeReferences;
+use petgraph::EdgeType;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
-use petgraph::graph::{NodeIndex, UnGraph, };
-use petgraph::visit::IntoNodeReferences;
-use petgraph::visit::{EdgeRef, };
-use petgraph::EdgeType;
-use crate::*;
 
 pub trait MorganCanonize {
     fn morgan_canonize(&self) -> Self;
@@ -29,8 +29,14 @@ where
     let g1_nodes: Vec<_> = g1.node_indices().map(|n| &g2[n]).collect();
     let g2_nodes: Vec<_> = g2.node_indices().map(|n| &g2[n]).collect();
 
-    let g1_edges: Vec<_> = g1.edge_references().map(|e| (e.source(), e.target())).collect();
-    let g2_edges: Vec<_> = g2.edge_references().map(|e| (e.source(), e.target())).collect();
+    let g1_edges: Vec<_> = g1
+        .edge_references()
+        .map(|e| (e.source(), e.target()))
+        .collect();
+    let g2_edges: Vec<_> = g2
+        .edge_references()
+        .map(|e| (e.source(), e.target()))
+        .collect();
 
     // Check if the number of nodes and edges are the same
     if g1_nodes.len() != g2_nodes.len() || g1_edges.len() != g2_edges.len() {
@@ -88,53 +94,55 @@ fn initial_label(element: &Element) -> usize {
 }
 
 /// Implements the Morgan algorithm for a given molecule graph.
-/// 
+///
 /// # Arguments
 /// * `graph` - A reference to the molecule graph (UnGraph<Element, Bond>).
 /// * `max_iterations` - Maximum number of iterations to perform.
-/// 
+///
 /// # Returns
 /// A mapping from each node index to its final canonical label.
-pub fn morgan_algorithm(graph: &UnGraph<Element, Bond>, max_iterations: usize) -> HashMap<NodeIndex, usize> {
+pub fn morgan_algorithm(
+    graph: &UnGraph<Element, Bond>,
+    max_iterations: usize,
+) -> HashMap<NodeIndex, usize> {
     let mut labels: HashMap<NodeIndex, usize> = HashMap::new();
-    
+
     // Initialize labels for all nodes.
     for node_ref in graph.node_references() {
         let node_index = node_ref.0;
         let element = node_ref.1;
         labels.insert(node_index, initial_label(element));
     }
-    
+
     // Iteratively refine the labels.
     for _ in 0..max_iterations {
         let mut updated_labels = labels.clone();
         let mut changed = false;
-        
+
         // Update each node's label based on its own label and its neighbors' labels.
         for node in graph.node_indices() {
             // Gather and sort the labels of neighboring nodes.
-            let mut neighbor_labels: Vec<usize> = graph.neighbors(node)
-                .map(|nbr| labels[&nbr])
-                .collect();
+            let mut neighbor_labels: Vec<usize> =
+                graph.neighbors(node).map(|nbr| labels[&nbr]).collect();
             neighbor_labels.sort();
-            
+
             // Combine current label with neighbor labels.
             let combined = (labels[&node], neighbor_labels);
             let new_label = compute_hash(&combined);
-            
+
             // If the new label is different, record the change.
             if new_label != labels[&node] {
                 updated_labels.insert(node, new_label);
                 changed = true;
             }
         }
-        
+
         labels = updated_labels;
         if !changed {
             break;
         }
     }
-    
+
     labels
 }
 
@@ -142,11 +150,11 @@ pub fn morgan_algorithm(graph: &UnGraph<Element, Bond>, max_iterations: usize) -
 // use your_module::{Element, Bond, MoleculeGraph};
 
 /// Rebuilds a canonical molecule graph from the Morgan algorithm labels.
-/// 
+///
 /// # Arguments
 /// * `graph` - A reference to the original molecule graph.
 /// * `labels` - A mapping from each node's index to its canonical label.
-/// 
+///
 /// # Returns
 /// A new molecule graph with nodes ordered canonically.
 pub fn rebuild_canonical_graph(
@@ -154,7 +162,8 @@ pub fn rebuild_canonical_graph(
     labels: &HashMap<NodeIndex, usize>,
 ) -> UnGraph<Element, Bond> {
     // Create a vector of (old_node, label) pairs.
-    let mut nodes_with_labels: Vec<(NodeIndex, usize)> = graph.node_indices()
+    let mut nodes_with_labels: Vec<(NodeIndex, usize)> = graph
+        .node_indices()
         .map(|node| (node, *labels.get(&node).unwrap_or(&0)))
         .collect();
 
@@ -196,7 +205,7 @@ mod tests {
         let canonized1 = mol1.morgan_canonize();
         let canonized2 = mol2.morgan_canonize();
         let canonized3 = mol3.morgan_canonize();
-        
+
         let org1 = OrganicMolecule::from(mol1);
         org1.visualize("uncanonized1.png").unwrap();
 
@@ -237,13 +246,12 @@ mod tests {
         assert_eq!(smiles2, smiles3);
     }
 
-
     #[test]
     fn test_canonize2() {
         let mol1 = parse_smiles("c1c(R)cc(R)cc1").unwrap();
         let mol2 = parse_smiles("c1ccc(R)cc1R").unwrap();
         let mol3 = parse_smiles("c1cc(R)cc(R)c1").unwrap();
-        
+
         // let canonized1 = mol1.into_canon();
         // let canonized2 = mol2.into_canon();
         // let canonized1 = mol1.clone();
@@ -251,7 +259,7 @@ mod tests {
         let canonized1 = mol1.morgan_canonize();
         let canonized2 = mol2.morgan_canonize();
         let canonized3 = mol3.morgan_canonize();
-        
+
         println!("Canonized 1: {:?}", canonized1);
         println!("Canonized 2: {:?}", canonized2);
         println!("Canonized 3: {:?}", canonized3);
@@ -287,7 +295,7 @@ mod tests {
         let mol2 = parse_smiles("C1CC1").unwrap();
         let labels1 = morgan_algorithm(&mol1, 10);
         let labels2 = morgan_algorithm(&mol2, 10);
-        
+
         // Since node indices may differ, compare sorted multisets of labels.
         let mut sorted_labels1: Vec<_> = labels1.values().cloned().collect();
         let mut sorted_labels2: Vec<_> = labels2.values().cloned().collect();
@@ -295,53 +303,70 @@ mod tests {
         sorted_labels2.sort();
 
         assert!(is_identical(&mol1, &mol2), "Molecules should be identical");
-        
-        assert_eq!(sorted_labels1, sorted_labels2, "Morgan labels should be consistent for isomorphic graphs");
+
+        assert_eq!(
+            sorted_labels1, sorted_labels2,
+            "Morgan labels should be consistent for isomorphic graphs"
+        );
     }
-    
+
     #[test]
     fn test_rebuild_canonical_graph_consistency() {
         // Test that rebuilding the graph using canonical labels preserves the SMILES representation.
         let mol = parse_smiles("c1ccccc1R").unwrap();
         let labels = morgan_algorithm(&mol, 10);
         let rebuilt = rebuild_canonical_graph(&mol, &labels);
-        
+
         // Obtain the canonical graph via morgan_canonize, then compare SMILES from both representations.
         let canonized = mol.morgan_canonize();
         let org_original = OrganicMolecule::from(canonized);
         let org_rebuilt = OrganicMolecule::from(rebuilt);
-        
+
         let smiles_original = org_original.to_smiles().unwrap();
         let smiles_rebuilt = org_rebuilt.to_smiles().unwrap();
-        
-        assert_eq!(smiles_original, smiles_rebuilt, "Rebuilt canonical graph should yield the same SMILES");
+
+        assert_eq!(
+            smiles_original, smiles_rebuilt,
+            "Rebuilt canonical graph should yield the same SMILES"
+        );
     }
-    
+
     #[test]
     fn test_rebuild_graph_structure() {
         // Ensure that the rebuilt graph has the same number of nodes and edges as the original.
         let mol = parse_smiles("CCO").unwrap();
         let labels = morgan_algorithm(&mol, 10);
         let rebuilt = rebuild_canonical_graph(&mol, &labels);
-        
-        assert_eq!(mol.node_count(), rebuilt.node_count(), "Node count should be preserved");
-        assert_eq!(mol.edge_count(), rebuilt.edge_count(), "Edge count should be preserved");
+
+        assert_eq!(
+            mol.node_count(),
+            rebuilt.node_count(),
+            "Node count should be preserved"
+        );
+        assert_eq!(
+            mol.edge_count(),
+            rebuilt.edge_count(),
+            "Edge count should be preserved"
+        );
     }
-    
+
     #[test]
     fn test_non_isomorphic_graphs() {
         // Test that non-isomorphic molecules (here, differing by a heteroatom) yield different Morgan labels.
-        let mol1 = parse_smiles("CCO").unwrap();  // Ethanol
-        let mol2 = parse_smiles("CCN").unwrap();  // Ethylamine, different heteroatom
+        let mol1 = parse_smiles("CCO").unwrap(); // Ethanol
+        let mol2 = parse_smiles("CCN").unwrap(); // Ethylamine, different heteroatom
         let labels1 = morgan_algorithm(&mol1, 10);
         let labels2 = morgan_algorithm(&mol2, 10);
-        
+
         let mut sorted_labels1: Vec<_> = labels1.values().cloned().collect();
         let mut sorted_labels2: Vec<_> = labels2.values().cloned().collect();
         sorted_labels1.sort();
         sorted_labels2.sort();
-        
-        assert_ne!(sorted_labels1, sorted_labels2, "Non-isomorphic molecules should have different Morgan labels");
+
+        assert_ne!(
+            sorted_labels1, sorted_labels2,
+            "Non-isomorphic molecules should have different Morgan labels"
+        );
     }
 }
 
@@ -654,7 +679,7 @@ mod tests {
 
         let canon1 = graph1.canonize();
         let canon2 = graph2.canonize();
-        
+
         // The canonical forms should be identical.
         assert!(is_identical(&canon1, &canon2));
         // The original graphs should not be identical.
@@ -696,7 +721,7 @@ mod tests {
 
         println!("Canon 1: {:?}", canon1);
         println!("Canon 2: {:?}", canon2);
-        
+
         // The canonical forms should be identical.
         assert!(is_identical(&canon1, &canon2));
         // The original graphs should not be identical.
@@ -729,7 +754,7 @@ mod tests {
         graph2.add_edge(b2, c2, ());
         graph2.add_edge(c2, d2, ());
         graph2.add_edge(d2, a2, ());
-        
+
 
         let canon1 = graph1.canonize();
         let canon2 = graph2.canonize();
@@ -772,7 +797,7 @@ mod tests {
         graph2.add_edge(c2, d2, ());
         graph2.add_edge(d2, a2, ());
         graph2.add_edge(a2, b2, ());
-        
+
 
         let canon1 = graph1.canonize();
         let canon2 = graph2.canonize();
@@ -850,15 +875,15 @@ pub struct SearchState<Ix> {
     pos_of_node: Vec<usize>,
     pub orbits: OrbitSet,
 
-    /// The partial labeling array we reorder. 
-    /// If `depth = k`, then `working_labeling[0..k]` is fixed, 
+    /// The partial labeling array we reorder.
+    /// If `depth = k`, then `working_labeling[0..k]` is fixed,
     /// and `[k..]` might be unassigned or temporarily swapped in.
     pub working_labeling: Vec<NodeIndex<Ix>>,
     pub depth: usize,
 
     /// The best final labeling so far (global minimum).
     pub best_labeling: Option<Vec<NodeIndex<Ix>>>,
-    
+
     /// For partial check: partition states we've seen at each depth -> record a "representative" partial labeling
     pub seen_partitions: HashMap<(usize, PartitionSignature), Vec<NodeIndex<Ix>>>,
 }
@@ -867,7 +892,7 @@ pub struct SearchState<Ix> {
 /// e.g. a sorted list of cell sizes, or something that identifies adjacency splits, etc.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PartitionSignature {
-    /// We just store each cell’s sorted node indices. 
+    /// We just store each cell’s sorted node indices.
     /// For partial checks, you might want something smaller, but let's keep it simple.
     cells: Vec<Vec<usize>>,
 }
@@ -1020,11 +1045,11 @@ fn backtrack_refine<N, E, Ty, Ix>(
         if partial_is_automorphism(graph, &st.base_labeling, &prev_lab, &st.working_labeling, st.depth) {
             // unify orbits among positions in [0..depth], skip further expansions
             unify_partial_orbits(&prev_lab, &st.working_labeling.clone(), st.depth, st);
-            // This may unify orbits so that we skip symmetrical pivots 
-            // but for a complete skip, you'd do it if the partial labeling is *identical* or something 
-            // We can do an early return if we consider them fully identical 
-            // (though that might skip distinct expansions). 
-            // Let's just unify orbits and *not* forcibly skip. 
+            // This may unify orbits so that we skip symmetrical pivots
+            // but for a complete skip, you'd do it if the partial labeling is *identical* or something
+            // We can do an early return if we consider them fully identical
+            // (though that might skip distinct expansions).
+            // Let's just unify orbits and *not* forcibly skip.
             // Real code might do more advanced logic:
             return;
         }
@@ -1090,7 +1115,7 @@ fn backtrack_refine<N, E, Ty, Ix>(
     st.depth = old_depth;
 }
 
-/// Build a “partition signature” for partial checks. 
+/// Build a “partition signature” for partial checks.
 /// For example, store each cell’s sorted node.index().
 fn partition_signature<Ix: IndexType>(partition: &[Vec<NodeIndex<Ix>>]) -> PartitionSignature {
     let mut cells: Vec<Vec<usize>> = partition
@@ -1145,7 +1170,7 @@ where
     Ix: IndexType,
 {
     // If depth=0 or 1, trivial. If depth=2 or more, let's check adjacency among candA[0..depth].
-    if depth < 2 { return false; } 
+    if depth < 2 { return false; }
     // build adjacency sets for candB among first `depth`.
     let mut edges_b = BTreeSet::new();
     for i in 0..depth {
@@ -1431,7 +1456,7 @@ mod tests {
         let mol1 = parse_smiles("c1c(R)cccc1").unwrap();
         let mol2 = parse_smiles("c1ccccc1R").unwrap();
         let mol3 = parse_smiles("c1cccc(R)c1").unwrap();
-        
+
         // let canonized1 = mol1.into_canon();
         // let canonized2 = mol2.into_canon();
         // let canonized1 = mol1.clone();
@@ -1439,7 +1464,7 @@ mod tests {
         let canonized1 = canonize(&mol1);
         let canonized2 = canonize(&mol2);
         let canonized3 = canonize(&mol3);
-        
+
         println!("Canonized 1: {:?}", canonized1);
         println!("Canonized 2: {:?}", canonized2);
         println!("Canonized 3: {:?}", canonized3);

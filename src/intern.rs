@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fmt::{Display, Debug, Formatter, Result as FmtResult},
+    fmt::{Debug, Display, Formatter, Result as FmtResult},
     sync::{Arc, RwLock},
 };
 
@@ -11,7 +11,10 @@ lazy_static! {
 }
 
 /// A symbol that uses string interning
-#[allow(clippy::derived_hash_with_manual_eq, clippy::derive_ord_xor_partial_ord)]
+#[allow(
+    clippy::derived_hash_with_manual_eq,
+    clippy::derive_ord_xor_partial_ord
+)]
 #[derive(Clone, Hash, Eq, Ord)]
 pub struct Name(Arc<String>);
 

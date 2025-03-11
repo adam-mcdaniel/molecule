@@ -1,12 +1,11 @@
 ///! A tool for parsing S-Expressions
-
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, multispace0, multispace1},
-    combinator::{map, cut, all_consuming, opt},
+    combinator::{all_consuming, cut, map, opt},
     error::{convert_error, VerboseError},
-    multi::{separated_list0, many0, many1},
+    multi::{many0, many1, separated_list0},
     sequence::{delimited, pair, preceded, terminated, tuple},
     IResult,
 };
@@ -34,9 +33,7 @@ pub struct Location<'a> {
 
 /// A helper that returns a `Location` for the current input position.
 fn current_location(input: &str) -> Location {
-    Location {
-        fragment: input,
-    }
+    Location { fragment: input }
 }
 
 impl Debug for Location<'_> {
@@ -119,7 +116,6 @@ impl FromStr for SExpr {
     }
 }
 
-
 // ---------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------
@@ -132,7 +128,7 @@ fn parse_string_literal(input: &str) -> Res<SExpr> {
         char('"'),
         // We use take_while; you might extend this with escapes.
         take_while(|c| c != '"'),
-        char('"')
+        char('"'),
     )(input)?;
     Ok((input, SExpr::Atom(content.to_string())))
 }
@@ -142,14 +138,14 @@ fn parse_atom(input: &str) -> Res<SExpr> {
     let (input, atom) = alt((
         parse_string_literal,
         // We use take_while; you might extend this with escapes.
-        map(take_while(|c: char| c != '{' && c != '}' && !c.is_whitespace()), |atom: &str| {
-            SExpr::Atom(atom.to_string())
-        }),
+        map(
+            take_while(|c: char| c != '{' && c != '}' && !c.is_whitespace()),
+            |atom: &str| SExpr::Atom(atom.to_string()),
+        ),
     ))(input)?;
     // let (input, atom) = take_while1(|c: char| c != '{' && c != '}' && !c.is_whitespace())(input)?;
     Ok((input, SExpr::Atom(atom.to_string())))
 }
-
 
 fn parse_list(input: &str) -> Res<SExpr> {
     let (input, _) = multispace0(input)?;
@@ -172,10 +168,9 @@ fn parse(input: &str) -> Result<SExpr, String> {
         Err(e) => match e {
             nom::Err::Error(e) | nom::Err::Failure(e) => Err(convert_error(input, e)),
             nom::Err::Incomplete(_) => Err("incomplete".to_string()),
-        }
+        },
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -209,11 +204,12 @@ mod tests {
     #[test]
     fn test_parse_smiles() {
         assert_eq!(
-            super::parse("
+            super::parse(
+                "
             C1=RC=CC=C1
-            "),
+            "
+            ),
             Ok(super::SExpr::Atom("C1=RC=CC=C1".to_string()))
         );
     }
-    
 }
